@@ -1,0 +1,866 @@
+//! The `Unit*` bindings. A getter resolves its token and reads the unit through the lent host as
+//! it runs ([`UnitStateQuery`], [`read_object`]), which keeps this crate free of the ECS; with no
+//! host free to ask it reads the [`UnitState`] snapshots the app pushes per token
+//! ([`UiScript::set_unit`]) and per guid ([`UiScript::set_unit_by_guid`]). Every predicate answers
+//! the number `1` or nil, never a Lua boolean.
+
+use std::borrow::Cow;
+
+use mlua::Lua;
+
+use super::{Model, ScriptCall};
+
+/// A selection ask from Lua, queued in call order for the app to resolve and commit. The reference
+/// routes `TargetUnit`, `AssistUnit` and `TargetLastEnemy` through one helper (`0x489a40`: commit,
+/// else the group roster, else a silent return), and a macro can observe their order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SelectionRequest {
+    /// `TargetUnit(unit)` (`0x4899d0`): the unit the token names.
+    Unit(String),
+    /// `AssistUnit(unit)` (`0x489b80`): the token's own `UNIT_FIELD_TARGET`; a token with no
+    /// target is a silent no-op that sends nothing.
+    Assist(String),
+    /// `AssistByName(name)` (`0x489c40`), the `/assist <name>` verb: what the named player
+    /// targets, resolved by name rather than by token.
+    AssistByName(String),
+    /// `TargetLastEnemy()`: the last attackable unit committed.
+    LastEnemy,
+}
+
+/// The reference's local player record (`0xc27d80`): a copy of the chosen `SMSG_CHAR_ENUM` row,
+/// written once at the Enter World commit (`0x5abd9e`) before FrameXML loads, and never cleared.
+/// `UnitName` (`0x517020`), `UnitRace` (`0x518200`), `UnitClass` (`0x518350`) and `UnitSex`
+/// (`0x517e90`) answer `"player"`, matched whole in any case, from it and never from the
+/// descriptor, so they answer before the player object exists. `UnitLevel` reads the descriptor:
+/// the record's level accessor (`0x5abe00`) has no caller. Race and class are held resolved, as
+/// this crate has no DBC.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlayerRecord {
+    /// `+0x08`, the name; empty is the unset record, whose `UnitName("player")` is nil
+    /// (`0x517095`).
+    pub name: String,
+    /// `+0x100` as `UnitRace`'s (localized, file token) pair; `None` is race 0, which has no
+    /// `ChrRaces` row and answers `nil, nil`.
+    pub race: Option<(String, String)>,
+    /// `+0x101` as `UnitClass`'s (localized, uppercase token) pair; `None` answers `nil, nil`.
+    pub class: Option<(String, String)>,
+    /// `+0x102` on `UnitSex`'s scale (2 male, 3 female), not the wire's 0/1. The unset 0 answers
+    /// 2, as the reference's all-zero record does: `0x517ef9` indexes `{2,3,1,6}` (`0x808be4`)
+    /// with no bounds check.
+    pub sex: u8,
+}
+
+/// One unit's snapshot, pushed by the app each frame under a token, or under a guid for a unit a
+/// `target` chain ends on, and read by the `Unit*` bindings; plain data, with no mlua handles or
+/// ECS types.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UnitState {
+    /// `UnitExists`, true for an out-of-range party member through the roster fallback. The
+    /// reference (`0x515fb0`) also requires a held object to be selectable before that fallback
+    /// (`0x60be60`: `UNIT_FIELD_FLAGS & 0x02000000` clear, or created by us); that is not built.
+    pub exists: bool,
+    /// `UnitIsVisible` (`0x516030`): the client holds an object for this token, and nothing more;
+    /// the range test is the server's, which drops out-of-range objects. Not [`Self::exists`]: an
+    /// out-of-range party member exists without an object.
+    pub has_object: bool,
+    /// `UnitIsTapped` (`0x519c90`): `UNIT_DYNAMIC_FLAGS` (field 143) bit `0x4`, someone holds the
+    /// kill credit. Set only from a live descriptor, which supplies the reference's
+    /// object-presence check.
+    pub tapped: bool,
+    /// `UnitIsPartyLeader`'s first leg: `PLAYER_FLAGS & 0x1` on a player's own descriptor, true
+    /// for a stranger leading their own party. The reference (`0x516210`) ORs it with a compare
+    /// against our group leader's guid.
+    pub group_leader: bool,
+    /// `UnitIsTappedByPlayer` (`0x519d00`): the same field's bit `0x8`. Tapped without it is
+    /// someone else's kill, the grey unit frame.
+    pub tapped_by_player: bool,
+    /// `UnitName`'s name; `None` until the name query answers, which reads as [`unknownobject`].
+    pub name: Option<String>,
+    /// Current health (`UnitHealth`).
+    pub health: u32,
+    /// Maximum health (`UnitHealthMax`).
+    pub max_health: u32,
+    /// Level (`UnitLevel`).
+    pub level: u32,
+    /// The active power type (`UnitPowerType`), `UNIT_FIELD_BYTES_0` byte 3: 0 mana, 1 rage,
+    /// 2 focus, 3 energy, 4 happiness.
+    pub power_type: u8,
+    /// Current power of the active type (`UnitMana`).
+    pub power: u32,
+    /// Maximum power of the active type (`UnitManaMax`).
+    pub max_power: u32,
+    /// `UnitIsDead`; a released ghost is not dead by it, as its health is 1.
+    pub dead: bool,
+    /// `UnitIsCharmed` (`0x516cf0`): `UNIT_FIELD_CHARMEDBY` (fields 10-11) is non-zero.
+    /// `UNIT_FIELD_CHARM` is never read, so a charmer answers nil, as does a summoned pet.
+    pub charmed: bool,
+    /// `UnitIsGhost`: `PLAYER_FLAGS` bit `0x10`, so players only.
+    pub ghost: bool,
+    /// The unit's reaction toward the player, `0x6061e0(unit, player)` plus one: 1 hated to 7
+    /// revered, which Exalted reads too (`0x606439` caps the rank), 0 unknown. The tooltip's and
+    /// the dishonorable-kill tests read it; the six relation verbs ask [`UnitRelations`]. Fed for
+    /// the tokens naming another unit; `"player"` and `"pet"` stay 0.
+    pub reaction: u8,
+    /// The other direction, the player's reaction toward the unit (`0x6061e0` with the player as
+    /// `this`), on the same scale, 0 unknown: the tooltip's creature-type gate (`0x52a2d9`) reads
+    /// it. Fed where [`Self::reaction`] is.
+    pub player_reaction: u8,
+    /// `UnitRace`'s localized first return, from `UNIT_FIELD_BYTES_0` byte 0; `None` answers
+    /// `nil, nil`.
+    pub race: Option<String>,
+    /// `UnitRace`'s second return, the file token (`"NightElf"`) texture paths are built from.
+    pub race_file: Option<String>,
+    /// `UnitClass`'s localized first return.
+    pub class: Option<String>,
+    /// `UnitClass`'s second return, the uppercase token (`"WARRIOR"`).
+    pub class_file: Option<String>,
+    /// `UnitCreatureFamily`'s word (`0x6055e0`, `0x51a372`): the localized `CreatureFamily.dbc` name of the
+    /// family word in the unit's cached creature record (`[[unit+0xb30]+0x1c]`); `None` without a
+    /// record, with family 0, or for a family the table lacks. Players have no record.
+    pub family: Option<String>,
+    /// `UnitHasRelicSlot` (`0x519e50`): INVSLOT 17 is a relic slot, from `ChrClasses.dbc` field
+    /// 16. Players only, true for Paladin, Shaman and Druid.
+    pub has_relic_slot: bool,
+    /// `ChrClasses.dbc` field 2 for a player's class, 0-based (Strength 0, Agility 1), which
+    /// `GetDamageBonusStat` (`0x48b520`) reads for the active player; `None` with no class row.
+    pub damage_bonus_stat: Option<u32>,
+    /// `UnitSex`'s scale, 2 male and 3 female, from `UNIT_FIELD_BYTES_0` byte 2 (0 male, 1
+    /// female). The unfilled 0 answers 2, the reference's unresolved answer (`0x517f9f`).
+    pub sex: u8,
+    /// `UnitIsPlayer`: a player character by guid, whose tooltip level line shows race and class.
+    pub is_player: bool,
+    /// `UnitPlayerControlled` (`0x516410`): `UNIT_FIELD_FLAGS` bit `0x8`, which a player's pet
+    /// and a charmed creature carry as well as a player.
+    pub player_controlled: bool,
+    /// `UNIT_FIELD_FLAGS`, raw: `UnitIsPlusMob` reads bit `0x40`, and `UNIT_FLAGS` fires when it
+    /// moves.
+    pub flags: u32,
+    /// `PLAYER_FLAGS` (field 190), raw, 0 on a creature. `PLAYER_FLAGS_CHANGED` fires when any
+    /// bit moves on any player, remote ones included: the reference's handler (`0x5ee990`) fires
+    /// before any bit test or local-player check. Raw, as most of its bits are not decoded here.
+    pub player_flags: u32,
+    /// `UNIT_DYNAMIC_FLAGS` (field 143), raw. The event of the same name fires when any bit
+    /// moves: the reference's field watch (`0x51bbb0`) compares the whole dword, and bits such as
+    /// `0x2` (tracked) are not decoded here.
+    pub dynamic_flags: u32,
+    /// The owner: `UNIT_FIELD_SUMMONEDBY`, else the charmer, else the creator, else 0; the
+    /// "or pet" half of `UnitPlayerOrPetInParty` and `UnitPlayerOrPetInRaid`.
+    pub owner: u64,
+    /// `GetGuildInfo(unit)`, from descriptor fields 191-192 and the guild-name cache; `None`
+    /// when guildless or not yet streamed.
+    pub guild: Option<super::guild::UnitGuild>,
+    /// `PLAYER_GUILDID` (field 191), the key `GetGuildInfo` looks its record up by; 0 for none
+    /// and for a creature.
+    pub guild_id: u32,
+    /// The creature template's subname ("Stable Master"), the tooltip's second line.
+    pub subtitle: Option<String>,
+    /// The word ("Beast") from `CreatureType.dbc` for the type the reference's resolver `0x605570`
+    /// returns for any unit: the shapeshift form's, else the creature template's, else the
+    /// race's. `UnitCreatureType` answers it, and a creature's level line takes it as its class
+    /// slot; a player's reads race and class instead. `None` for type 0 or no descriptor.
+    pub creature_type_name: Option<String>,
+    /// The id that resolver returned, 0 for none. The tooltip's level line leaves the word out for
+    /// type 10, "Not specified" (`0x52a2c6`), where `UnitCreatureType` answers it.
+    pub creature_type: u32,
+    /// Creature rank 0..=4 as the reference's getter (`0x605620`) answers it, so already gated:
+    /// 0 without a cached creature template or with a pet number. The tooltip's rank word,
+    /// `UnitLevel`'s boss -1 and `UnitClassification` all read it.
+    pub rank: u32,
+    /// The creature civilian flag, one term of [`is_civilian_kill`].
+    pub civilian: bool,
+    /// The creature racial-leader flag, the tooltip's LEADER line when PvP-flagged (`0x6125c0`).
+    pub racial_leader: bool,
+    /// The unit's own PvP flag, `UNIT_FIELD_FLAGS` bit 12, which the tooltip's PvP line reads
+    /// (`0x52a866`); for a party member out of view, the roster's bit. `UnitIsPVP` reads it only
+    /// for a unit the host does not hold, and asks `IsPvP` of one it does.
+    pub pvp: bool,
+    /// `UNIT_FIELD_FLAGS`' skinnable bit, the tooltip's red Skinnable line.
+    pub skinnable: bool,
+    /// The faction name ("Stormwind"), the tooltip line after the level line, from `Faction.dbc`
+    /// through the faction template with its hiding gates applied; `None` shows no line.
+    pub faction_name: Option<String>,
+    /// `UnitIsConnected`: any unit the object manager holds answers 1 (`0x517daf`); a party token
+    /// with no object takes the roster status byte's `0x01`. The default `false` reads
+    /// disconnected, which greys a stock mana bar (`UnitFrame.lua:214`), so a hand-built live
+    /// unit must set it; the app's `snapshot` does for every held one.
+    pub is_connected: bool,
+    /// `UnitIsPVPFreeForAll` (`0x516540`): a held unit's `UNIT_FIELD_FLAGS` 0x8 and its
+    /// controlling player's `PLAYER_FLAGS` 0x80, or for one with no object the roster status
+    /// byte's `0x10`; independent of [`Self::pvp`].
+    pub is_pvp_ffa: bool,
+    /// `UnitPVPRank`: the current rank on the internal `0..=18` scale (0 none), from the public
+    /// `PLAYER_BYTES_3` byte 3. The private lifetime highest rides
+    /// [`HonorState`](super::HonorState); [`super::pvp`] converts to the `-4..=14` visual scale.
+    pub pvp_rank: u8,
+    /// The city-protector title, `PLAYER_BYTES_3` byte 2 (0 none): `UnitPVPName` appends the
+    /// `PVP_MEDAL<n>` line for a non-zero one (`0x6093ef`).
+    pub pvp_medal: u8,
+    /// `UnitFactionGroup`'s first return, `"Alliance"` or `"Horde"`: `FactionGroup.dbc`'s English
+    /// `InternalName` for the side bit of the faction template's group mask, which stock builds
+    /// texture paths from (`PlayerFrame.lua:68`). `None` for a template with no side.
+    pub faction_group: Option<String>,
+    /// `UnitFactionGroup`'s second return, `FactionGroup.dbc`'s localized `Name0`: display text.
+    pub faction_group_localized: Option<String>,
+    /// The team digit of `PVP_RANK_<rank>_<team>` (`0x5efe00`): 0 Horde, 1 Alliance, -1 no side.
+    /// It follows the race through `ChrRaces` and `FactionTemplate`, never the live template
+    /// `UnitFactionGroup` reads (`0x5166b8`), so a GM on template 35 keeps the rank title. The
+    /// default 0 is the reference's answer for a unit it cannot resolve (`0x51a9af`).
+    pub pvp_team: i8,
+    /// `OBJECT_FIELD_GUID`, which `UnitIsUnit` and `UnitInParty` compare; 0 is unresolved, and
+    /// two zeros never match.
+    pub guid: u64,
+    /// `GetRaidTargetIndex`: 0 none, else the mark 1..=8, from the group's raid-target board.
+    pub raid_target: u8,
+    /// `UnitIsCorpse` (`0x5161c0`): the token names a `TYPEID_CORPSE` object, which a dead unit
+    /// is not. No feed sets it.
+    pub corpse_object: bool,
+    /// `UnitAffectingCombat` (`0x517e10`): `UNIT_FIELD_FLAGS` bit `0x00080000`, for every token
+    /// including `"player"`; the reference has no separate player combat flag.
+    pub in_combat: bool,
+    /// A held player's `PLAYER_QUEST_LOG` window, `[quest id, count-state, timer]` per slot, all
+    /// zero off a player: the 20 slots of 12 bytes at `[player+0xe68]+0x28` that `IsUnitOnQuest`
+    /// scans (`0x4dfebd`) and the `UNIT_QUEST_LOG_CHANGED` watch compares (`0x51bc63`). Whole, so
+    /// a change anywhere in it is a snapshot change; a group mate's carries the ids alone.
+    pub quest_log: [[u32; 3]; 20],
+    /// `PLAYER_BYTES_3` byte 1, the drunkenness, 0 off a player. The active player's lowers the
+    /// level `UnitLevel` (`0x5180a0`) and the unit tooltip (`0x52a397`) show of a unit it can
+    /// attack.
+    pub drunk: u8,
+    /// What the unit tooltip builder `0x529fe0` alone reads of the unit.
+    pub tooltip: super::tooltip_unit::UnitTooltipFacts,
+    /// The unit's own stat, resistance, damage, speed and attack-power fields, which the stat
+    /// getters read for any unit but the active player (`ui/unitstats`); zeros where the server
+    /// sends the field to the owner alone.
+    pub combat: super::stat_read::UnitCombatStats,
+    /// `UNIT_FIELD_SUMMONEDBY` (fields 12-13), 0 for none: `UnitDefense` and `UnitAttackBothHands`
+    /// answer a unit the active player summoned (`0x519272`, `0x518881`).
+    pub summoned_by: u64,
+}
+
+/// The name of a unit whose name is not yet known, as the reference's `UnitName` (`0x517220`) and
+/// unit tooltip title (`0x609324`) both answer it: the `UNKNOWNOBJECT` GlobalString (enUS
+/// "Unknown"), else the literal "Unknown Being" (`0x860fa4`) when the global is missing or empty.
+pub fn unknownobject(lua: &Lua) -> mlua::Result<mlua::String> {
+    // One expression: `benilla-app`'s `reference_strings` check matches
+    // `globals().get::<String>`, and a line break inside it would hide this lookup.
+    let global = lua.globals().get::<String>("UNKNOWNOBJECT").ok();
+    lua.create_string(match global.as_deref() {
+        Some(s) if !s.is_empty() => s,
+        _ => "Unknown Being",
+    })
+}
+
+/// The reference's grey-level band (`0x80ae98`; twins at `0x81dda8` and `0x8076c0`), indexed by
+/// player level / 5.
+const GREY_BAND: [u32; 20] = [
+    4, 4, 5, 5, 6, 6, 7, 7, 8, 9, 10, 11, 12, 12, 12, 12, 12, 12, 12, 12,
+];
+
+/// `GetQuestGreenRange`'s answer (`0x4e17d0`): the band for a player level, 12 past the table.
+pub fn grey_band(player_level: u32) -> u32 {
+    GREY_BAND
+        .get((player_level / 5) as usize)
+        .copied()
+        .unwrap_or(12)
+}
+
+/// The reference's grey level test (`0x5f0700`): the unit is more than the band below the player,
+/// strictly, so a gap equal to the band is still green. The reference also returns false for a
+/// player (object type bit `0x10`, `0x5f0726`-`0x5f0732`); a pet takes the level test.
+pub fn unit_is_grey(player_level: u32, unit_level: u32) -> bool {
+    player_level > unit_level && player_level - unit_level > grey_band(player_level)
+}
+
+/// The civilian gate (`0x612550`), a dishonorable kill: PvP-flagged (`0x61255f`), a civilian
+/// creature record (`0x612571`), the unit's reaction toward the player 1 or less (`0x61259f`,
+/// `UnitReaction` <= 2 here) and grey to it (`0x5f0700`, `0x6125a6`). The tooltip's CIVILIAN line
+/// and `UnitPVPName`'s civilian prefix (`0x609370`) both read it.
+pub fn is_civilian_kill(u: &UnitState, player_level: u32) -> bool {
+    civilian_kill_of(u, u.civilian, u, player_level)
+}
+
+/// [`is_civilian_kill`] with the record's civilian flag as given, and the PvP flag and the level
+/// off `object`.
+fn civilian_kill_of(
+    u: &UnitState,
+    civilian: bool,
+    object: &dyn UnitObjectRead,
+    player_level: u32,
+) -> bool {
+    civilian
+        && object.pvp()
+        && u.reaction != 0
+        && u.reaction <= 2
+        && unit_is_grey(player_level, object.level())
+}
+
+/// The tooltip's "??" level gate (`0x529fe0`): level 0, or [`level_is_hidden`].
+pub fn level_reads_unknown(u: &UnitState, player_level: u32) -> bool {
+    u.level == 0 || level_is_hidden(u, player_level)
+}
+
+/// The two legs `UnitLevel` (`0x517fc0`) answers -1 on, as the tooltip reads them too: a unit whose
+/// reaction toward the player is 1 or less (`0x518057`-`0x51807b`, `0x52a342`-`0x52a34a`;
+/// `UnitReaction` <= 2 here) at least 10 levels above the player, players among them, since
+/// neither path tests the unit's type; and world-boss rank 3 (`0x51807d`-`0x518087`, `0x52a373`).
+pub fn level_is_hidden(u: &UnitState, player_level: u32) -> bool {
+    level_is_hidden_at(u, u.level, u.rank, Some(player_level))
+}
+
+/// [`level_is_hidden`] at `level`, the one read off the unit's object, and `rank`, the one read
+/// off its creature record; with no active player, `None`, the hostile leg is skipped
+/// (`0x518055`) and only the rank hides.
+fn level_is_hidden_at(u: &UnitState, level: u32, rank: u32, player_level: Option<u32>) -> bool {
+    let much_higher_hostile = player_level.is_some_and(|player_level| {
+        u.reaction != 0 && u.reaction <= 2 && level >= player_level.saturating_add(10)
+    });
+    rank == 3 || much_higher_hostile
+}
+
+/// The level a drunk player sees on a unit it can attack, the unit tooltip's arithmetic
+/// (`0x52a3c6`-`0x52a3f4`): `min(drunk, 100) · 0.05 + 0.5` truncated (`0x40a2b0`), off the level,
+/// at least 1. The client runs the x87 at 53 bits, so the f64 operations are its own.
+pub fn tooltip_drunk_level(level: u32, drunk: u8) -> u32 {
+    let cut = (f64::from(drunk.min(100)) * f64::from(0.05f32) + 0.5).trunc() as i64;
+    (i64::from(level) - cut).max(1) as u32
+}
+
+/// [`tooltip_drunk_level`] as `UnitLevel` computes it (`0x5180c8`-`0x5180ec`): the product formed
+/// as `drunk · 5.0 · 0.01`, which at 53 bits truncates one lower at 10, 30, 50, 70 and 90.
+pub fn unit_level_drunk_level(level: u32, drunk: u8) -> u32 {
+    let cut = (f64::from(drunk.min(100)) * 5.0 * f64::from(0.01f32) + 0.5).trunc() as i64;
+    (i64::from(level) - cut).max(1) as u32
+}
+
+/// `UnitClassification` (`0x516d90`): the word table at `0x850424` indexed by the gated
+/// [`UnitState::rank`]; an unresolved token reads index 0, "normal" (`0x516dc4`). "rareelite" is
+/// a real answer, though stock draws it with the elite art (`TargetFrame.lua:209`).
+pub fn classification_word(rank: u32) -> &'static str {
+    match rank {
+        1 => "elite",
+        2 => "rareelite",
+        3 => "worldboss",
+        4 => "rare",
+        _ => "normal",
+    }
+}
+
+/// The resource name for a power type, the suffix of 1.12's per-resource events (`UNIT_RAGE`,
+/// `UNIT_MAXRAGE`); an unknown index reads as mana, the descriptor default.
+pub fn power_token(ty: u8) -> &'static str {
+    match ty {
+        1 => "RAGE",
+        2 => "FOCUS",
+        3 => "ENERGY",
+        4 => "HAPPINESS",
+        _ => "MANA",
+    }
+}
+
+impl super::UiScript {
+    /// The guids `UnitName` read off a unit with no object and found no name for, which the
+    /// reference's lookup asks the server for (`0x5171eb`), as a harness's VM kept them
+    /// ([`Self::keep_calls`]), in call order.
+    #[cfg(test)]
+    pub fn take_unit_name_asks(&mut self) -> Vec<u64> {
+        self.take_calls_where(|call| match call {
+            super::ScriptCall::RecordAsk(super::RecordAsk::PlayerName(guid)) => Some(*guid),
+            _ => None,
+        })
+    }
+
+    /// [`unknownobject`]'s text, for a reader outside the VM that copies it, as the deactivate
+    /// snapshot copies it into a record's pet name (`0x5f0a63`-`0x5f0a70`).
+    pub fn unknown_object_text(&self) -> String {
+        unknownobject(self.lua())
+            .ok()
+            .and_then(|s| s.to_str().ok().map(|s| s.to_string()))
+            .unwrap_or_else(|| "Unknown Being".to_string())
+    }
+
+    /// Push, or clear with `None`, the VM's copy of a token's unit, which the getters read with no
+    /// host free to ask ([`UnitStateQuery`]); a `/reload`'s seat and the mouseover's hover push
+    /// it. Nothing redraws off a push: a tooltip's bar follows its unit's health watcher
+    /// (`0x52a08d` → `0x529560`).
+    pub fn set_unit(&mut self, token: &str, state: Option<UnitState>) {
+        {
+            let mut model = self.model_mut();
+            match state {
+                // Keys fold to lowercase on the way in too, so a `"Target"` push cannot shadow
+                // `"target"`.
+                Some(s) => {
+                    // A `"player"` push updates each record field it carries and never blanks
+                    // one, so a nameless snapshot cannot reach the four record verbs.
+                    if token.eq_ignore_ascii_case("player") {
+                        let rec = &mut model.player_record;
+                        if let Some(name) = s.name.as_deref().filter(|n| !n.is_empty()) {
+                            if rec.name != name {
+                                rec.name = name.to_string();
+                            }
+                        }
+                        if let Some(race) = s.race.clone().zip(s.race_file.clone()) {
+                            rec.race = Some(race);
+                        }
+                        if let Some(class) = s.class.clone().zip(s.class_file.clone()) {
+                            rec.class = Some(class);
+                        }
+                        if s.sex != 0 {
+                            rec.sex = s.sex;
+                        }
+                    }
+                    model.units_by_lower.insert(token.to_ascii_lowercase(), s);
+                }
+                None => {
+                    model.units_by_lower.remove(&token.to_ascii_lowercase());
+                }
+            }
+        }
+    }
+
+    /// Push, or clear with `None`, the snapshot of a unit a `target` chain can end on, by guid. A
+    /// token with a hop that no push names (`"party1target"`, `"raid3targettarget"`) resolves
+    /// through [`UnitGuids`] to a guid and reads that guid's entry, the reference's order
+    /// (`0x515970`, then each getter's object lookup `0x468460`), with no host free to ask; the
+    /// app pushes none, as its getters read the unit through the host ([`UnitStateQuery`]). A
+    /// token without a hop reads its own push, not this.
+    pub fn set_unit_by_guid(&mut self, guid: u64, state: Option<UnitState>) {
+        let mut model = self.model_mut();
+        match state {
+            Some(s) => {
+                model.units_by_guid.insert(guid, s);
+            }
+            None => {
+                model.units_by_guid.remove(&guid);
+            }
+        }
+    }
+
+    /// The snapshot pushed under `token` itself, as [`Self::set_unit`] left it.
+    pub fn unit_view(&self, token: &str) -> Option<UnitState> {
+        self.model_ref().pushed_unit(token).cloned()
+    }
+
+    /// Push the player's copper (`PLAYER_FIELD_COINAGE`), read by `GetMoney`.
+    pub fn set_money(&mut self, copper: u64) {
+        self.model_mut().money = copper;
+    }
+
+    /// Set the VM's copy of `PLAYER_XP` and `PLAYER_NEXT_LEVEL_XP`, private fields that `UnitXP`
+    /// and `UnitXPMax` answer for `"player"` alone, which they read with no host lent
+    /// ([`super::SelfRead`]).
+    pub fn set_player_xp(&mut self, xp: u32, next_level_xp: u32) {
+        let mut model = self.model_mut();
+        model.player_xp = xp;
+        model.player_next_level_xp = next_level_xp;
+    }
+
+    /// Set the VM's copy of the rest state (`PLAYER_BYTES_2` byte 3), the rested pool
+    /// (`PLAYER_REST_STATE_EXPERIENCE`, raw) and `PLAYER_FLAGS_RESTING`, which `GetRestState`,
+    /// `GetXPExhaustion` and `IsResting` read with no host lent ([`super::SelfRead`]).
+    pub fn set_rest_state(&mut self, state: u8, pool: u32, resting: bool) {
+        let mut model = self.model_mut();
+        model.rest_state = state;
+        model.rest_pool = pool;
+        model.resting = resting;
+    }
+
+    /// Set the VM's copy of `PLAYER_FLAGS` bits 12 (`PartialPlayTime`) and 13 (`NoPlayTime`),
+    /// which those getters read with no host lent ([`super::SelfRead`]).
+    pub fn set_play_time(&mut self, partial: bool, none: bool) {
+        let mut model = self.model_mut();
+        model.partial_play_time = partial;
+        model.no_play_time = none;
+    }
+
+    /// Push `GetBillingTimeRested()`'s minutes, from the last `SMSG_AUTH_RESPONSE` that carried the
+    /// billing group; nothing else on the wire writes it.
+    pub fn set_billing_time_rested(&mut self, minutes: u32) {
+        self.model_mut().billing_time_rested = minutes;
+    }
+
+    /// Enter the UI-load sound-suppression scope (`0x458f50`): a depth every name-keyed
+    /// `PlaySound` reads, so scopes nest and only the outermost exit re-enables sound.
+    pub fn push_sound_suppression(&self) {
+        let mut model = self.model_mut();
+        model.sound_suppression = model.sound_suppression.saturating_add(1);
+    }
+
+    /// Leave it (`0x458f60`), saturating so an unbalanced pop cannot wrap to a muted UI.
+    pub fn pop_sound_suppression(&self) {
+        let mut model = self.model_mut();
+        model.sound_suppression = model.sound_suppression.saturating_sub(1);
+    }
+
+    /// Push whether a cinematic is playing, `InCinematic()`'s answer.
+    pub fn set_in_cinematic(&mut self, playing: bool) {
+        self.model_mut().in_cinematic = playing;
+    }
+
+    /// Push `Exhaustion.dbc`'s (rest state, localized name, factor) rows, read as `0x48d350` and
+    /// `0x48d3f0` read them; an empty push keeps the fallback table the model seeds.
+    pub fn set_exhaustion_rows(&mut self, rows: Vec<(u8, String, f64)>) {
+        if rows.is_empty() {
+            return;
+        }
+        let mut model = self.model_mut();
+        model.exhaustion = rows.into_iter().map(|(id, n, f)| (id, (n, f))).collect();
+    }
+
+    /// A rest state's `Exhaustion.dbc` row, (localized name, XP factor), as the store
+    /// `0xc0dd78` the combat log's XP line reads (`0x637b2a`) holds it.
+    pub fn exhaustion_row(&self, state: u8) -> Option<(String, f64)> {
+        self.model_ref().exhaustion.get(&state).cloned()
+    }
+
+    /// Set the VM's copy of the combo points (`PLAYER_FIELD_BYTES` byte 1) and their target
+    /// (`PLAYER_FIELD_COMBO_TARGET`), which `GetComboPoints` reads with no host lent
+    /// ([`super::SelfRead`]). Raw: its class and target gates are the binding's.
+    pub fn set_combo_points(&mut self, points: u8, target: u64) {
+        let mut model = self.model_mut();
+        model.combo_points = points;
+        model.combo_target = target;
+    }
+
+    /// Take the queued [`SelectionRequest`]s out of the call stream, in call order.
+    pub fn take_selection_requests(&mut self) -> Vec<SelectionRequest> {
+        self.take_calls_where(|c| match c {
+            ScriptCall::Select { request, .. } => Some(request.clone()),
+            _ => None,
+        })
+    }
+
+    /// Take the `TargetNearest*([reverse])` calls out of the call stream, `true` for reverse.
+    /// They name no unit: the reference runs the TAB cycler (`0x493f60`) straight into
+    /// `SetSelection`.
+    #[cfg(test)]
+    pub fn take_target_nearest_requests(&mut self) -> Vec<(super::NearestMode, bool)> {
+        self.take_calls_where(|c| match c {
+            ScriptCall::TargetNearest { mode, reverse, .. } => Some((*mode, *reverse)),
+            _ => None,
+        })
+    }
+
+    /// Take the `TargetByName(name, exactMatch)` calls out of the call stream.
+    #[cfg(test)]
+    pub fn take_target_by_name_requests(&mut self) -> Vec<(String, bool)> {
+        self.take_calls_where(|c| match c {
+            ScriptCall::TargetByName { name, exact, .. } => Some((name.clone(), *exact)),
+            _ => None,
+        })
+    }
+
+    /// Take the `ClearTarget()` calls out of the call stream: whether there was one.
+    pub fn take_target_clear(&mut self) -> bool {
+        !self
+            .take_calls_where(|c| matches!(c, ScriptCall::ClearTarget).then_some(()))
+            .is_empty()
+    }
+
+    /// Take the `SpellTargetUnit` calls out of the call stream.
+    pub fn take_spell_target_unit(&mut self) -> Vec<String> {
+        self.take_calls_where(|c| match c {
+            ScriptCall::SpellTargetUnit(token) => Some(token.clone()),
+            _ => None,
+        })
+    }
+}
+
+use resolve::token_recognised;
+
+/// The resolver's token check: an unrecognised token raises `Unknown unit name`, as `0x515970`
+/// ends in `luaL_error`; `""`, an absent token and a recognised one naming nothing pass. Whether
+/// nil arrives is per binding: of the 83 in the table at `0x850438`, 53 raise `Usage:` first and
+/// 13 unit-token bindings take nil with no gate.
+pub(crate) fn check_unit_token(token: &Option<String>) -> mlua::Result<()> {
+    match token {
+        Some(t) if !t.is_empty() && !token_recognised(t) => {
+            Err(mlua::Error::runtime(format!("Unknown unit name: {t}")))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The state of the unit `token` names, as a getter reads it at the call: the guid the resolver
+/// names now ([`resolve::live_parsed`]: `0x515970` reads the objects and the group rows inside the
+/// call), then that unit as the lent host reads it now ([`UnitStateQuery`]): its object, else the
+/// group's record of it (`0x496400`, `0x496420`), else what the name cache knows; `None` for
+/// nobody. A host that declines, or none free to ask (a glue VM, or a call's apply under way), or a
+/// token that reads no object, reads the snapshots: the token's push while it names the same unit,
+/// else what the getters read for the guid ([`Model::unit_of_guid`]), else
+/// [`Model::snapshot_unit`].
+pub(crate) fn view<'m>(lua: &Lua, model: &'m Model, token: &str) -> Option<Cow<'m, UnitState>> {
+    view_as(lua, model, token, false)
+}
+
+/// [`view`] for a reader that takes the held unit's own fields off the object through the host
+/// ([`read_object`], [`read_identity`], [`read_record`]): a held unit is its guid and the legs
+/// [`UnitHeldQuery`] answers, with nothing built or copied; an unheld one is [`view`]'s.
+pub(crate) fn view_held<'m>(
+    lua: &Lua,
+    model: &'m Model,
+    token: &str,
+) -> Option<Cow<'m, UnitState>> {
+    view_as(lua, model, token, true)
+}
+
+/// The unit `guid` names as a builder that finds it by guid reads it (`0x529fe0` looks the object
+/// up at `0x52a021`, then the group's records at `0x52a02b`, `0x52a036`): through the lent host as
+/// a token naming it does, else, with no host, what the getters read for the guid.
+pub(crate) fn view_of_guid<'m>(lua: &Lua, model: &'m Model, guid: u64) -> Cow<'m, UnitState> {
+    let query = UnitStateQuery {
+        guid,
+        player: false,
+    };
+    if let Some(UnitStateAnswer::Held(state) | UnitStateAnswer::Unheld(state)) =
+        super::live::ask(lua, &query)
+    {
+        return Cow::Owned(state);
+    }
+    let held =
+        super::host::read_host(lua, |h| h.read_unit_object(guid, &mut |_| {})) != Some(false);
+    model.unit_of_guid(guid, held)
+}
+
+fn view_as<'m>(lua: &Lua, model: &'m Model, token: &str, thin: bool) -> Option<Cow<'m, UnitState>> {
+    let snapshot = model.snapshot_unit(token);
+    let UnitTokenParse::Unit { base, hops } = parse_unit_token(token) else {
+        return snapshot.map(Cow::Borrowed);
+    };
+    let Some(live) = resolve::live_parsed(lua, &model.unit_guids, base, hops) else {
+        return snapshot.map(Cow::Borrowed);
+    };
+    // Every token reads the unit live, as the getters read the object the resolver names
+    // (`0x515970`, then `0x468460`), else the group's record of its guid (`0x496400`, `0x496420`).
+    match (snapshot, live) {
+        (Some(pushed), None) if pushed.guid == 0 => Some(Cow::Borrowed(pushed)),
+        (_, None) => None,
+        (snapshot, Some(guid)) => {
+            let query = UnitStateQuery {
+                guid,
+                player: base == UnitBase::Player && hops == 0,
+            };
+            if thin {
+                if let Some(UnitHeld::Held {
+                    is_player,
+                    reaction,
+                }) = super::live::ask(lua, &UnitHeldQuery(query))
+                {
+                    return Some(Cow::Owned(UnitState {
+                        exists: true,
+                        has_object: true,
+                        is_connected: true,
+                        guid,
+                        is_player,
+                        reaction,
+                        ..Default::default()
+                    }));
+                }
+            }
+            match super::live::ask(lua, &query) {
+                Some(UnitStateAnswer::Held(state) | UnitStateAnswer::Unheld(state)) => {
+                    return Some(Cow::Owned(state))
+                }
+                None => {}
+            }
+            if let Some(pushed) = snapshot.filter(|p| p.guid == guid) {
+                return Some(Cow::Borrowed(pushed));
+            }
+            // The object lookup each getter makes after the resolver (`0x468460`), held as a unit:
+            // `UnitExists`' slot 22 answers 0 for a game object or an item (`0x515fee`), the
+            // objects named apart ([`ObjectNameQuery`]).
+            let held = super::host::read_host(lua, |h| h.read_unit_object(guid, &mut |_| {}))
+                == Some(true)
+                && super::live::ask(lua, &ObjectNameQuery(guid)).is_none();
+            Some(model.unit_of_guid(guid, held))
+        }
+    }
+}
+
+/// The guid `token` names at the call ([`resolve::resolve_token`]), `None` for nobody, raising
+/// `Unknown unit name` for a token none of the resolver's compares match.
+pub(crate) fn guid_of(lua: &Lua, model: &Model, token: &str) -> mlua::Result<Option<u64>> {
+    token_guid(lua, &model.unit_guids, token)
+}
+
+/// Map a token's state through `f` under a short model borrow ([`view`]), or answer `default` for
+/// an absent unit, after the token check: a getter that reads nothing of the object
+/// ([`with_object`]).
+fn with_unit<T>(
+    lua: &Lua,
+    token: &Option<String>,
+    default: T,
+    f: impl FnOnce(&UnitState) -> T,
+) -> mlua::Result<T> {
+    check_unit_token(token)?;
+    let model = lua.app_data_ref::<Model>().expect("model app_data");
+    Ok(match token.as_ref().and_then(|t| view(lua, &model, t)) {
+        Some(u) => f(&u),
+        None => default,
+    })
+}
+
+/// Whether `token` names the active player: `"player"`, or any token the resolver turns into the
+/// player's guid at the call (`target` on yourself, `0x5173ad`-`0x5173c9`). The private player
+/// blocks (`UnitXP`, `UnitCharacterPoints`) answer for this unit alone.
+pub(super) fn names_self(lua: &Lua, model: &Model, token: &str) -> bool {
+    let me = model.unit_guids.player;
+    token.eq_ignore_ascii_case("player")
+        || (me != 0
+            && resolve::resolve_token(lua, &model.unit_guids, token)
+                .ok()
+                .flatten()
+                == Some(me))
+}
+
+/// [`read_object`] on `token`, or `default` for an absent unit, after the token check.
+pub(super) fn with_object<T>(
+    lua: &Lua,
+    token: &Option<String>,
+    default: T,
+    f: impl FnOnce(&UnitState, &dyn UnitObjectRead) -> T,
+) -> mlua::Result<T> {
+    check_unit_token(token)?;
+    Ok(token
+        .as_deref()
+        .and_then(|t| read_object(lua, t, f))
+        .unwrap_or(default))
+}
+
+/// The unit `token` names, mapped through `f` with its snapshot and its object; `None` for no
+/// unit. The token resolves at the call ([`view`]); `f` then reads each of the
+/// object's own fields it answers off the object the lent host holds, as the reference's getters
+/// read the object they resolved (`UnitHealth`, `0x5174d0`), and anything else off the snapshot.
+/// With no host free to ask (a glue VM, or a call's apply under way), or no object held, the
+/// snapshot answers both.
+pub(crate) fn read_object<T>(
+    lua: &Lua,
+    token: &str,
+    f: impl FnOnce(&UnitState, &dyn UnitObjectRead) -> T,
+) -> Option<T> {
+    let model = lua.app_data_ref::<Model>().expect("model app_data");
+    let unit = view_held(lua, &model, token)?;
+    let unit: &UnitState = &unit;
+    let mut f = Some(f);
+    let mut out = None;
+    if unit.has_object && unit.guid != 0 {
+        super::host::read_host(lua, |h| {
+            h.read_unit_object(unit.guid, &mut |object| {
+                out = f.take().map(|f| f(unit, object));
+            })
+        });
+    }
+    match (out, f) {
+        (Some(out), _) => Some(out),
+        (None, Some(f)) => Some(f(unit, unit)),
+        (None, None) => None,
+    }
+}
+
+/// The unit `token` names, mapped through `f` with its snapshot and what names it; `None` for no
+/// unit. The token resolves at the call ([`view`]); a held unit's name, race and class are read
+/// off its object and the name caches through the lent host, as the reference's getters name any
+/// unit the object manager holds (`0x51710c` → `0x609210`), so a unit no snapshot holds is named
+/// too; a field the caches or tables miss answers from the snapshot, which a feed may have named
+/// from the roster. With no host free to ask, or no object held, the snapshot answers.
+pub(crate) fn read_identity<T>(
+    lua: &Lua,
+    token: &str,
+    f: impl FnOnce(&UnitState, &dyn UnitIdentityRead) -> T,
+) -> Option<T> {
+    let model = lua.app_data_ref::<Model>().expect("model app_data");
+    let unit = view_held(lua, &model, token)?;
+    let unit: &UnitState = &unit;
+    let mut f = Some(f);
+    let mut out = None;
+    if unit.has_object && unit.guid != 0 {
+        super::host::read_host(lua, |h| {
+            h.read_unit_identity(unit.guid, &mut |live| {
+                out = f.take().map(|f| f(unit, &LiveOr { live, unit }));
+            })
+        });
+    }
+    match (out, f) {
+        (Some(out), _) => Some(out),
+        (None, Some(f)) => Some(f(unit, unit)),
+        (None, None) => None,
+    }
+}
+
+/// A live identity read, each field the snapshot's where the live read has none.
+struct LiveOr<'a> {
+    live: &'a dyn UnitIdentityRead,
+    unit: &'a UnitState,
+}
+
+impl UnitIdentityRead for LiveOr<'_> {
+    fn name(&self) -> Option<String> {
+        self.live.name().or_else(|| self.unit.name.clone())
+    }
+    fn race(&self) -> Option<(String, String)> {
+        self.live
+            .race()
+            .or_else(|| UnitIdentityRead::race(self.unit))
+    }
+    fn class(&self) -> Option<(String, String)> {
+        self.live
+            .class()
+            .or_else(|| UnitIdentityRead::class(self.unit))
+    }
+    fn family(&self) -> Option<String> {
+        self.live
+            .family()
+            .or_else(|| UnitIdentityRead::family(self.unit))
+    }
+}
+
+/// A unit predicate's body: the number 1 or nil through [`super::binding_abi::flag`], never a Lua
+/// boolean, as the reference pushes only `lua_pushnumber` (`0x6f3810`) or `lua_pushnil`
+/// (`0x6f37f0`). `UnitReaction`, `UnitLevel` and `UnitPowerType` are getters with their own
+/// shapes and do not route here.
+fn unit_predicate(
+    lua: &Lua,
+    token: &Option<String>,
+    f: impl FnOnce(&UnitState) -> bool,
+) -> mlua::Result<mlua::Value> {
+    Ok(super::binding_abi::flag(with_unit(lua, token, false, f)?))
+}
+
+/// [`unit_predicate`] for a predicate on the object's own fields ([`with_object`]).
+fn object_predicate(
+    lua: &Lua,
+    token: &Option<String>,
+    f: impl FnOnce(&UnitState, &dyn UnitObjectRead) -> bool,
+) -> mlua::Result<mlua::Value> {
+    Ok(super::binding_abi::flag(with_object(lua, token, false, f)?))
+}
+
+/// The `Unit*` and `GetQuestGreenRange` registrations.
+mod bindings;
+pub mod by_name;
+#[cfg(test)]
+mod chain_tests;
+mod object;
+mod record;
+mod relations;
+mod resolve;
+mod selection_read;
+#[cfg(test)]
+mod selection_tests;
+mod state_read;
+#[cfg(test)]
+mod tests;
+
+pub use object::{UnitIdentityRead, UnitObject, UnitObjectRead};
+pub(crate) use record::read_record;
+pub use record::{PlayerNameQuery, UnitRecord, UnitRecordQuery};
+pub(crate) use relations::with_relations;
+pub use relations::{RelationAnswer, RelationQuery, UnitRelations};
+pub use resolve::{
+    bound_tokens_in, field_watchers_in, parse_unit_token, resolve_unit_in, tokens_in, UnitBase,
+    UnitGuids, UnitTokenGlobals, UnitTokenObjects, UnitTokenParse,
+};
+pub(crate) use resolve::{token_flags_in, token_guid, with_live_objects, LiveGlobals};
+pub use selection_read::{ObjectNameQuery, SelectionGlobals, SelectionQuery};
+pub use state_read::{UnitHeld, UnitHeldQuery, UnitStateAnswer, UnitStateQuery};
+
+pub(super) use bindings::install;
