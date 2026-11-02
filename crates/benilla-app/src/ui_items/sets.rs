@@ -6,7 +6,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use benilla_ui::script::live::LiveAsk;
-use benilla_ui::script::ItemSetQuery;
+use benilla_ui::script::{ItemSetLookup, ItemSetQuery, ItemSetRow};
 
 /// What the set block reads as it runs: our store as of the drain's place, which the bonuses'
 /// `$`-tokens read. With the set table or the item-name cache absent it declines; with no active
@@ -25,7 +25,29 @@ pub(crate) struct ItemSetLive<'w, 's> {
 
 impl crate::script_calls::live::LiveFamily for ItemSetLive<'_, '_> {
     fn answer(&mut self, ask: &mut LiveAsk<'_>) -> bool {
-        ask.answer(|q: &ItemSetQuery| {
+        ask.answer(|q: &ItemSetLookup| {
+            let sets = self.sets.as_deref()?;
+            let id = match *q {
+                ItemSetLookup::Set(id) => id,
+                ItemSetLookup::OfItem(entry) => self
+                    .items
+                    .as_deref()?
+                    .template(entry, 0, crate::query_cache::Ask::Read)
+                    .map_or(0, |t| t.item_set),
+            };
+            Some(sets.0.set(id).map(|s| {
+                ItemSetRow {
+                    id,
+                    name: s.name.clone(),
+                    items: s.items.iter().copied().filter(|&i| i != 0).collect(),
+                    bonuses: s
+                        .bonuses
+                        .iter()
+                        .map(|&(need, spell)| (spell, need))
+                        .collect(),
+                }
+            }))
+        }) || ask.answer(|q: &ItemSetQuery| {
             let (sets, item_names) = (self.sets.as_deref()?, self.item_names.as_deref()?);
             let me = self.objects.player().and_then(|e| self.stores.get(e).ok());
             Some(super::feed::item_set_live(

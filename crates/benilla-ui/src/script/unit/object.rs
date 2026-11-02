@@ -91,7 +91,7 @@ unit_object! {
     in_combat: bool,
     pvp_rank: u8,
     pvp_medal: u8,
-    quest_log: [[u32; 3]; 20],
+    quest_log: [[u32; 3]; crate::script::QUEST_LOG_SLOTS],
     guild_id: u32,
     drunk: u8,
     sex: u8,

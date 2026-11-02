@@ -507,8 +507,28 @@ pub(crate) fn publish_world_time(
     server: Res<ServerTime>,
     step: Res<FrameStep>,
     mut world_time: ResMut<WorldTime>,
+    // The player's visual time-of-day choice; absent in a harness without it.
+    time_of_day: Option<Res<crate::time_of_day::TimeOfDaySetting>>,
 ) {
     let clock = &server.0;
+    // Deviation: a local or static time of day draws in the server's place, the visual alone.
+    if let Some(minute_f) = time_of_day
+        .as_deref()
+        .and_then(|s| s.override_minute(crate::time_of_day::local_minute))
+    {
+        let days = if clock.live() {
+            clock.day_count() as f64
+        } else {
+            0.0
+        };
+        *world_time = WorldTime {
+            minute: minute_f as u32,
+            minute_f,
+            day: days + f64::from(minute_f / 1440.0),
+            live: true,
+        };
+        return;
+    }
     *world_time = if clock.live() {
         let phase = clock.phase(clock_tick(&step));
         WorldTime {

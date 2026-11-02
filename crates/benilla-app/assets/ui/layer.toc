@@ -21,3 +21,5 @@ SpellBookAdapters.xml
 ScriptLogFrame.xml
 # Our fixes to the stock Lua.
 FrameXMLFixes.xml
+# nampower's cast state, queue verbs, trinket helpers and version, which OctoWoW's client mods add.
+ClientModAdapters.xml

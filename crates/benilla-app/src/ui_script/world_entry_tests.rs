@@ -285,7 +285,9 @@ fn the_login_arms_the_world_latch_and_the_logout_spends_it() {
 /// `CGGameUI::InitializeGame` flags `realmList`, `realmName` and `scriptMemory` read-only for the
 /// world session (`0x48f566`-`0x48f584`) and `ShutdownGame` clears them (`0x491240`): an
 /// in-game `SetCVar` of one raises, through a reload too. The character screen's glue state has no
-/// `SetCVar` to try (`reference/glue_surface.tsv`), on either side of the session.
+/// `SetCVar` in the reference (`reference/glue_surface.tsv`); benilla's login screen settings give
+/// it one (`benilla_ui::script::glue_launcher`), which writes the rows freely on either side of
+/// the session.
 #[test]
 fn the_realm_cvars_are_read_only_to_lua_only_in_the_world() {
     let _l = ENV_LOCK
@@ -300,13 +302,15 @@ fn the_realm_cvars_are_read_only_to_lua_only_in_the_world() {
         s.register_cvars(crate::cvars::registered_pairs());
         s.run(chunk).map_err(|e| e.to_string())
     };
-    let glue_has_no_set_cvar = |world: &World| {
-        let s = world.non_send_resource::<benilla_ui::script::UiScript>();
-        s.vm_kind() == benilla_ui::script::VmKind::Glue
-            && s.eval::<bool>("return SetCVar == nil").unwrap()
+    let glue_sets_freely = |world: &World| {
+        let glue = world
+            .non_send_resource::<benilla_ui::script::UiScript>()
+            .vm_kind()
+            == benilla_ui::script::VmKind::Glue;
+        glue && set(world, "SetCVar(\"realmList\", GetCVar(\"realmList\"))").is_ok()
     };
 
-    assert!(glue_has_no_set_cvar(&world), "the character screen's VM");
+    assert!(glue_sets_freely(&world), "the character screen's VM");
 
     log_in_as(&mut world, "Onehunter", 1);
     for name in ["realmList", "realmName"] {
@@ -323,7 +327,7 @@ fn the_realm_cvars_are_read_only_to_lua_only_in_the_world() {
 
     super::end_ui_session(&mut world);
     assert!(
-        glue_has_no_set_cvar(&world),
+        glue_sets_freely(&world),
         "the flags died with the world's VM"
     );
 

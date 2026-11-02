@@ -178,7 +178,21 @@ fn the_glue_vm_answers_the_glue_surface() {
         .map(|(k, _)| k)
         .collect();
 
-    let beyond: Vec<&String> = ours.iter().filter(|n| !surface.contains(*n)).collect();
+    // SuperWoW's shared functions (`crate::script::superwow`) and the login screen's settings and
+    // launcher verbs (`crate::script::glue_launcher`) are the listed exceptions.
+    let superwow: BTreeSet<&str> = crate::script::superwow::SHARED_GLOBALS
+        .iter()
+        .filter(|(_, t)| *t == "function")
+        .map(|(n, _)| *n)
+        .collect();
+    let beyond: Vec<&String> = ours
+        .iter()
+        .filter(|n| {
+            !surface.contains(*n)
+                && !superwow.contains(n.as_str())
+                && !crate::script::glue_launcher::GLUE_GLOBALS.contains(&n.as_str())
+        })
+        .collect();
     assert!(
         beyond.is_empty(),
         "the glue VM exposes {} function(s) the glue state does not have: {beyond:?}. The \
@@ -226,6 +240,13 @@ fn the_glue_vm_holds_no_other_global() {
         ("table", "table"),
     ]
     .into_iter()
+    // SuperWoW's version strings (`crate::script::superwow`).
+    .chain(
+        crate::script::superwow::SHARED_GLOBALS
+            .iter()
+            .copied()
+            .filter(|(_, t)| *t != "function"),
+    )
     .map(|(k, t)| (k.to_string(), t.to_string()))
     .collect();
     assert_eq!(others, want);

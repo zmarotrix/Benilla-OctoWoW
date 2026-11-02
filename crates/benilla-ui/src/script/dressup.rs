@@ -32,15 +32,16 @@ impl super::UiScript {
     /// The dressing-room verbs a harness's VM kept ([`Self::keep_calls`]), oldest first.
     pub fn take_dressup_intents(&mut self) -> Vec<DressUpIntent> {
         self.take_calls_where(|call| match call {
-            super::ScriptCall::DressUp(intent) => Some(*intent),
+            super::ScriptCall::DressUp(_, intent) => Some(*intent),
             _ => None,
         })
     }
 }
 
-/// Hand `intent` to the host, which applies it before this returns.
-fn submit(lua: &Lua, intent: DressUpIntent) -> mlua::Result<()> {
-    super::calls::submit(lua, super::ScriptCall::DressUp(intent))
+/// Hand `intent` on the pane `this` to the host, which applies it before this returns.
+fn submit(lua: &Lua, this: &Table, intent: DressUpIntent) -> mlua::Result<()> {
+    let h = frame_handle_of(lua, this)?;
+    super::calls::submit(lua, super::ScriptCall::DressUp(h, intent))
 }
 
 /// The rebuild when `PlayerModel`'s `SetUnit`/`RefreshUnit` lands on a `DressUpModel`.
@@ -53,7 +54,7 @@ pub(super) fn redress_if_dressup(lua: &Lua, this: &Table) -> mlua::Result<()> {
         .frame(h)
         .is_some_and(|f| f.kind == FrameKind::DressUpModel);
     if is_dressup {
-        submit(lua, DressUpIntent::Dress)?;
+        submit(lua, this, DressUpIntent::Dress)?;
     }
     Ok(())
 }
@@ -73,19 +74,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `0x504c00`.
     m.set(
         "Undress",
-        lua.create_function(|lua, this: Table| {
-            frame_handle_of(lua, &this)?;
-            submit(lua, DressUpIntent::Undress)
-        })?,
+        lua.create_function(|lua, this: Table| submit(lua, &this, DressUpIntent::Undress))?,
     )?;
 
     // `0x504cd0`, the Reset button (`DressUpFrame.xml:182`).
     m.set(
         "Dress",
-        lua.create_function(|lua, this: Table| {
-            frame_handle_of(lua, &this)?;
-            submit(lua, DressUpIntent::Dress)
-        })?,
+        lua.create_function(|lua, this: Table| submit(lua, &this, DressUpIntent::Dress))?,
     )?;
 
     // `0x504d90` calls `0x504540(itemId)`; item 0 (a non-number or a link) previews nothing, and
@@ -96,7 +91,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             frame_handle_of(lua, &this)?;
             if let Ok(id) = u32::try_from(item_arg(lua, &item)) {
                 if id != 0 {
-                    submit(lua, DressUpIntent::TryOn(id))?;
+                    submit(lua, &this, DressUpIntent::TryOn(id))?;
                 }
             }
             Ok(())

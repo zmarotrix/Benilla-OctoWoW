@@ -21,7 +21,10 @@
 //! `0x4c70b0`, its explored-bytes watch `0x4a6460`, and the weapon arms of the visible-item watch
 //! `0x5e2810`. The item watchers' and the inventory watcher's runs are [`crate::item_watch`]'s.
 
-use benilla_protocol::messages::{quest_slot_state, ObjectType, PLAYER_QUEST_LOG_SLOTS};
+use benilla_protocol::messages::{
+    quest_slot_state, ObjectType, FIELD_PLAYER_QUEST_LOG_EXTRA_1_1, PLAYER_QUEST_LOG_EXTRA_SLOTS,
+    PLAYER_QUEST_LOG_SLOTS, PLAYER_QUEST_LOG_STOCK_SLOTS,
+};
 use benilla_protocol::{ObjectFields, OwnerFallback};
 use bevy::prelude::*;
 
@@ -521,6 +524,24 @@ const VISIBLE_ITEMS_WATCH: (u16, u16) = (0x118, 0x390);
 const QUEST_LOG_WATCH: (u16, u16) = (0x28, 0xf0);
 /// One quest slot, three dwords: the id, the state and counters, the timer.
 const QUEST_SLOT_BYTES: u16 = 12;
+/// The extra quest slots past the stock 20, at the player section's `+0x10c8`: OctoWoW's
+/// `.octoql` hook `0xd26145` compares exactly these against a copy and reruns the quest-log
+/// rebuild on a change.
+const QUEST_LOG_EXTRA_WATCH: (u16, u16) = (
+    (FIELD_PLAYER_QUEST_LOG_EXTRA_1_1 - PLAYER_SECTION) * 4,
+    QUEST_SLOT_BYTES * PLAYER_QUEST_LOG_EXTRA_SLOTS as u16,
+);
+
+/// The 12-byte watch over quest slot `slot`, in whichever of the two ranges holds it.
+fn quest_slot_watch(slot: u16) -> (u16, u16) {
+    let stock = u16::from(PLAYER_QUEST_LOG_STOCK_SLOTS);
+    let at = if slot < stock {
+        QUEST_LOG_WATCH.0 + QUEST_SLOT_BYTES * slot
+    } else {
+        QUEST_LOG_EXTRA_WATCH.0 + QUEST_SLOT_BYTES * (slot - stock)
+    };
+    (at, QUEST_SLOT_BYTES)
+}
 
 /// The active player's point counters' watch `0x4c7000`, `PLAYER_CHARACTER_POINTS1` and `2` at
 /// the player section's `+0xe48`, 8 bytes, registered at world entry (`0x4c6fce`, `0x4c6fd8`).
@@ -1227,7 +1248,9 @@ pub(crate) fn placed_values(
             let id = id::UNIT_INVENTORY_CHANGED;
             pass.push(at, FieldNotice::Unit { guid, id });
         }
-        if let Some(at) = at(PLAYER_SECTION, QUEST_LOG_WATCH, List::Object) {
+        if let Some(at) = at(PLAYER_SECTION, QUEST_LOG_WATCH, List::Object)
+            .or_else(|| at(PLAYER_SECTION, QUEST_LOG_EXTRA_WATCH, List::Object))
+        {
             let id = id::UNIT_QUEST_LOG_CHANGED;
             pass.push(at, FieldNotice::Unit { guid, id });
         }
@@ -1263,10 +1286,7 @@ pub(crate) fn placed_values(
         // (`0x5dde66`); then the run ends in the quest-list rebuild `0x4e8be0` (`0x5dde98`), which
         // signals `UPDATE_LFG_TYPES` (`0x4e8c70`). One run per slot that moved.
         for slot in 0..u16::from(PLAYER_QUEST_LOG_SLOTS) {
-            let slot_watch = (
-                QUEST_LOG_WATCH.0 + QUEST_SLOT_BYTES * slot,
-                QUEST_SLOT_BYTES,
-            );
+            let slot_watch = quest_slot_watch(slot);
             let Some((fired, _, list)) = at(PLAYER_SECTION, slot_watch, List::Object) else {
                 continue;
             };
@@ -1287,7 +1307,9 @@ pub(crate) fn placed_values(
         }
         // Registered at world entry (`0x4de430`), after the bridge's watch on the same range and
         // the slot watchers.
-        if let Some(at) = at(PLAYER_SECTION, QUEST_LOG_WATCH, List::Object) {
+        if let Some(at) = at(PLAYER_SECTION, QUEST_LOG_WATCH, List::Object)
+            .or_else(|| at(PLAYER_SECTION, QUEST_LOG_EXTRA_WATCH, List::Object))
+        {
             pass.push(at, FieldNotice::QuestLog);
         }
         if let Some(at) = at(PLAYER_SECTION, (REST_STATE, 1), List::Object) {

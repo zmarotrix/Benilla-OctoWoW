@@ -7,7 +7,7 @@
 //! comes off the chain, a bare filename is a file we ship ([`is_chain_entry`]). Without client
 //! data the chain files are absent, and the log says so once.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, RwLock};
 
 use benilla_formats::Chain;
 use benilla_ui::toc::Toc;
@@ -162,26 +162,42 @@ fn open(data: Option<std::path::PathBuf>) -> (Option<Chain>, Option<Notice>) {
 /// The notice of the open, until [`chain`] logs it.
 static NOTICE: std::sync::Mutex<Option<Notice>> = std::sync::Mutex::new(None);
 
-/// The patch chain, opened once per process, logging nothing: the window is born before the log
+/// The patch chain, opened once per process, or again by [`reopen`]; `None` until first asked.
+static CHAIN: RwLock<Option<Option<Arc<Chain>>>> = RwLock::new(None);
+
+/// The patch chain, opened at the first ask, logging nothing: the window is born before the log
 /// plugin exists ([`boot_client_locale`]), where a message would be dropped.
-fn chain_quiet() -> Option<&'static Chain> {
-    static CHAIN: OnceLock<Option<Chain>> = OnceLock::new();
-    CHAIN
-        .get_or_init(|| {
-            let (chain, notice) = open(benilla_formats::wow_data());
-            *NOTICE
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = notice;
-            chain
-        })
-        .as_ref()
+fn chain_quiet() -> Option<Arc<Chain>> {
+    if let Some(chain) = CHAIN.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        return chain.clone();
+    }
+    let mut slot = CHAIN.write().unwrap_or_else(|e| e.into_inner());
+    slot.get_or_insert_with(|| {
+        let (chain, notice) = open(benilla_formats::wow_data());
+        *NOTICE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = notice;
+        chain.map(Arc::new)
+    })
+    .clone()
+}
+
+/// Open the chain again, for every interface file read from now on: a server's streamed content
+/// mounted or taken away while the client runs ([`crate::content_stream`]). Deviation: 1.12.1
+/// opens its archives once.
+pub(crate) fn reopen() {
+    let (chain, notice) = open(benilla_formats::wow_data());
+    if let Some(Notice::Warn(m) | Notice::Error(m)) = notice {
+        warn!("{m}");
+    }
+    *CHAIN.write().unwrap_or_else(|e| e.into_inner()) = Some(chain.map(Arc::new));
 }
 
 /// The player's patch chain, opened once per process and shared by every VM. Process-local, not
 /// the one [`benilla_assets`] holds: tests, the addon harness and a bare `UiScript` load the
 /// interface with no Bevy world to ask. The open's one message is logged here, the first time
 /// anything past start-up asks.
-fn chain() -> Option<&'static Chain> {
+fn chain() -> Option<Arc<Chain>> {
     let chain = chain_quiet();
     let notice = NOTICE
         .lock()
@@ -198,20 +214,20 @@ fn chain() -> Option<&'static Chain> {
 /// [`client_locale`] for the one caller that runs before the log plugin: the primary window's
 /// birth. It opens the same chain, but whatever the open has to say waits for [`chain`].
 pub(crate) fn boot_client_locale() -> benilla_formats::Locale {
-    chain_quiet().map(Chain::locale).unwrap_or_default()
+    chain_quiet().map(|c| c.locale()).unwrap_or_default()
 }
 
 /// The client's locale, from the player's `Wow.ini` as start-up reads it once (`0x402350`): the
 /// default, enUS's column and tag 0, with no install. Every VM answers `GetLocale` and picks an
 /// addon's metadata by its index, the logon carries its tag, and the name cache keys on it.
 pub(crate) fn client_locale() -> benilla_formats::Locale {
-    chain().map(Chain::locale).unwrap_or_default()
+    chain().map(|c| c.locale()).unwrap_or_default()
 }
 
 /// `Wow.ini`'s `Region`, which start-up hands the character name check once (`0x402b7f`); 0 with
 /// no install, the file or the key. Signed, as the name check compares it (`0x6c9a78`).
 pub(crate) fn client_region() -> i32 {
-    chain().map_or(0, |c| benilla_formats::client_region(c) as i32)
+    chain().map_or(0, |c| benilla_formats::client_region(&c) as i32)
 }
 
 /// Files a test lays over the chain, per test thread: an entry with bytes reads as a chain file,

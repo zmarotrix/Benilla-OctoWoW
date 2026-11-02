@@ -196,6 +196,12 @@ pub enum SessionEvent {
     AddonInfo {
         records: Vec<crate::messages::AddonRecord>,
     },
+    /// The server answered the extension handshake ([`crate::messages::extensions`]) with what it
+    /// offers. Emitted by the IO thread once per world session, or decoded when the reply lands
+    /// in the world stream.
+    ServerExtensions {
+        extensions: crate::messages::extensions::Extensions,
+    },
     /// A roster ask on the parked session failed on the stream (`0x5ab300`'s failure leg,
     /// `SetStatus(0, 0x2c)`, `CHAR_LIST_FAILED`); the session ends after it. Emitted by the IO
     /// thread, never wire-decoded.

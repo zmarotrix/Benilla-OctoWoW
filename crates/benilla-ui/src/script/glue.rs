@@ -61,10 +61,16 @@ pub fn glue_events() -> &'static [&'static str] {
     &NAMES
 }
 
-/// The in-game table's distinct names, in id order.
+/// The in-game table's distinct names, in id order, then SuperWoW's events
+/// ([`super::superwow::IN_GAME_EVENTS`]) and nampower's ([`super::nampower::IN_GAME_EVENTS`]),
+/// which OctoWoW's client mods add.
 pub(crate) fn in_game_events() -> &'static [&'static str] {
-    static NAMES: std::sync::LazyLock<Vec<&'static str>> =
-        std::sync::LazyLock::new(|| event_names(IN_GAME_EVENT_TABLE));
+    static NAMES: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+        let mut names = event_names(IN_GAME_EVENT_TABLE);
+        names.extend(super::superwow::IN_GAME_EVENTS);
+        names.extend(super::nampower::IN_GAME_EVENTS);
+        names
+    });
     &NAMES
 }
 

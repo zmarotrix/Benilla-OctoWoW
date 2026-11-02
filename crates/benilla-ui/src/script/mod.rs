@@ -88,6 +88,8 @@ mod glue;
 mod glue_addons;
 mod glue_core;
 mod glue_create;
+mod glue_launcher;
+pub use glue_launcher::{LauncherAsk, LauncherFolder};
 mod glue_realm;
 mod glue_select;
 pub use glue::{glue_events, VmKind};
@@ -203,7 +205,26 @@ pub(crate) use stdlib::{
     call_global_under_error_function, execute_buffer, execute_buffer_reported,
     run_under_error_function,
 };
+mod nampower;
+pub use nampower::{
+    CastTimeQuery, SpellIconQuery, SpellNowAnswer, SpellNowQuery, SpellQueueQuery, SpellRangeQuery,
+    SpellRowAnswer, SpellRowQuery, UnitFieldsQuery, IN_GAME_EVENTS as NAMPOWER_EVENTS,
+};
+mod modstate;
 mod summon;
+pub use modstate::{
+    CombatTimers, CombatTimersQuery, CursorWorldQuery, ImmuneQuery, ItemSetLookup, ItemSetRow,
+    KeyDownQuery, PlayerState, PlayerStateQuery, ResistQuery, SchoolLockoutQuery, SwingKind,
+    TotemQuery, TotemSlot, UnitCastQuery, UnitTrendQuery,
+};
+pub mod smartmacro;
+mod superwow;
+mod unitxp;
+pub use superwow::{
+    guid_text, set_imports_dir, SpellInfoAnswer, SpellInfoQuery, UnitPositionQuery,
+    IN_GAME_EVENTS as SUPERWOW_EVENTS,
+};
+pub use unitxp::{LineOfSightQuery, NearbyUnitsQuery, OwnAuraLeftQuery, UnitBody, UnitBodyQuery};
 mod talent;
 mod taxi;
 mod tick;
@@ -515,12 +536,12 @@ pub use unit::by_name::{
     self, HeldCandidatesQuery, LiveCandidate, LiveCandidates, NameCandidate, SeatedSelection,
 };
 pub use unit::{
-    grey_band, level_reads_unknown, parse_unit_token, power_token, resolve_unit_in, unit_is_grey,
-    ObjectNameQuery, PlayerNameQuery, PlayerRecord, RelationAnswer, RelationQuery,
-    SelectionGlobals, SelectionQuery, SelectionRequest, UnitBase, UnitGuids, UnitHeld,
-    UnitHeldQuery, UnitIdentityRead, UnitObject, UnitObjectRead, UnitRecord, UnitRecordQuery,
-    UnitRelations, UnitState, UnitStateAnswer, UnitStateQuery, UnitTokenGlobals, UnitTokenObjects,
-    UnitTokenParse,
+    grey_band, level_reads_unknown, owner_in_fields, owner_of_token, parse_unit_token, power_token,
+    resolve_unit_in, unit_is_grey, ObjectNameQuery, PlayerNameQuery, PlayerRecord, RelationAnswer,
+    RelationQuery, SelectionGlobals, SelectionQuery, SelectionRequest, UnitBase, UnitGuids,
+    UnitHeld, UnitHeldQuery, UnitIdentityRead, UnitObject, UnitObjectRead, UnitRecord,
+    UnitRecordQuery, UnitRelations, UnitState, UnitStateAnswer, UnitStateQuery, UnitTokenGlobals,
+    UnitTokenObjects, UnitTokenParse,
 };
 pub use unit_watch::{
     HealthWatch, TokenChange, TokenFlagsCarry, TOKEN_PARTY, TOKEN_PARTY_PET, TOKEN_PET,
@@ -758,6 +779,8 @@ fn install_framescript(vm: VmKind) -> mlua::Result<Lua> {
 
     // `0x4587f0` (table `0x835a50`): `PlaySound`, `PlayMusic`, `PlaySoundFile`, `StopMusic`.
     sound::install(&lua)?;
+    // OctoWoW's client mods: SuperWoW's globals, in both states.
+    superwow::install(&lua)?;
     Ok(lua)
 }
 
@@ -765,6 +788,9 @@ fn install_framescript(vm: VmKind) -> mlua::Result<Lua> {
 /// the calls around it), the in-game widget types' method tables among it.
 fn install_in_game(lua: &Lua) -> mlua::Result<()> {
     addon::install(lua)?;
+    // OctoWoW's client mods: SuperWoW's in-game globals.
+    superwow::install_in_game(lua)?;
+    nampower::install_in_game(lua)?;
     addon_message::install(lua)?;
     chat_send::install(lua)?;
     chat_types::install(lua)?;
@@ -851,6 +877,10 @@ fn install_in_game(lua: &Lua) -> mlua::Result<()> {
     worldmap::install(lua)?;
     worldstate::install(lua)?;
     net_stats::install(lua)?;
+    // Last, over the stock `UnitXP` the unit bindings set: UnitXP SP3's commands.
+    unitxp::install_in_game(lua)?;
+    smartmacro::install(lua)?;
+    modstate::install_in_game(lua)?;
     Ok(())
 }
 
@@ -874,6 +904,7 @@ impl UiScript {
     pub fn new_glue() -> mlua::Result<UiScript> {
         let lua = install_framescript(VmKind::Glue)?;
         glue::install(&lua)?;
+        glue_launcher::install(&lua)?;
         object::guard_receivers(&lua)?;
         Ok(Self::host(lua))
     }
@@ -1316,6 +1347,14 @@ impl UiScript {
     /// frame: each is a hyperlink button over its span, a child of its frame ([`hyperlink`]).
     pub fn set_link_spans(&mut self, spans: Vec<(FrameHandle, Rect, String, String)>) {
         hyperlink::set_spans(&self.lua, spans);
+    }
+
+    /// Whether the frame `h` is shown with every ancestor (`IsVisible()`).
+    pub fn frame_handle_visible(&self, h: crate::widget::FrameHandle) -> bool {
+        self.model_ref()
+            .arena
+            .frame(h)
+            .is_some_and(|f| f.effective_visible)
     }
 
     /// Whether the frame with this global name is shown with every ancestor (`IsVisible()`).

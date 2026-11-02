@@ -63,6 +63,19 @@ pub(super) const HOST_HELD_UNREAD: &[&str] = &[
     // Quiet: the animations the handlers and the verbs ask for, which the model systems play; no
     // getter reads a model's sequence.
     "::creature_anim::PlaySeq",
+    // Quiet: the client mods' timers and tables, which only the getters read, at their calls;
+    // no feed fires off them ([`READ_ONLY_TO_HANDLERS`]'s rows for each).
+    "::combat_timers::SwingClocks",
+    "::own_auras::OwnAuras",
+    "::totems::PlayerTotems",
+    "::totems::SchoolLockout",
+    "::unit_casts::UnitCasts",
+    "::unit_casts::HealthTrends",
+    "::unit_casts::LastResists",
+    "::immunities::Immunities",
+    // Quiet: the spell queue's held press, which the queue's own send reads after the frame's
+    // packets; its events ride the SuperWoW lane.
+    "::spell::queue::SpellQueue",
     // Quiet: the gestures a chat line's firing and a world click's greeting queue, which
     // `drive_gestures` plays as the speaker's animation (`0x60bb30` → `0x5fcd20`); no getter
     // reads a model's gesture, and no feed fires off it.
@@ -479,6 +492,8 @@ pub(super) const WRITES_NO_VIEW: &[(&str, &str)] = &[
     ("::ui_script::movie::upload_movie_pictures", "the movie's pictures, a draw"),
     ("::ui_world_map::dev_map_jump", "a dev instrument's click"),
     ("::video::drain_restart_gx", "the `RestartGx` asks no call took"),
+    ("::spell::queue::send_due", "the spell queue's timer: a held press sent once the client \
+        allows it, after the frame's packets, as nampower sends it from its own tick"),
 ];
 
 /// The resources the handlers fill through a shared reference, which their declared access shows
@@ -498,6 +513,9 @@ pub(super) const FILLED_THROUGH_A_READ: &[(&str, Fill)] = &[
     ("::ui_logout::SessionPosts", Fill::Sink),
     // The gestures a chat line or a world click's greeting plays, which `drive_gestures` takes.
     ("::creature_anim::gesture::GestureQueue", Fill::Sink),
+    // The spell queue, which the ladder holds a press in and our cast's start times, through
+    // `&self` ([`crate::spell::queue`]).
+    ("::spell::queue::SpellQueue", Fill::State),
 ];
 
 /// What a resource [`FILLED_THROUGH_A_READ`] holds is to the systems that reach it.
@@ -528,6 +546,32 @@ pub(super) fn filled_through_a_read(n: &str) -> Option<Fill> {
 /// check here unseen. Each is named by its full path, the crate's own by its path in the crate,
 /// and matched whole ([`names_exactly`]).
 pub(super) const READ_ONLY_TO_HANDLERS: &[&str] = &[
+    // `fastAuctionQueries`, copied out of the CVar table each frame for the browse list's handler
+    // ([`crate::ui_auction::FastAuctionQueries`]).
+    "::ui_auction::FastAuctionQueries",
+    // `ServerMessages.dbc`, loaded once; the announcement history words a broadcast through it
+    // ([`crate::announcements`]).
+    "::ui_chat::broadcast::ServerMessages",
+    // The spell queue's CVars, copied out of the table each frame for the cast ladder
+    // ([`crate::spell::queue`]).
+    "::spell::queue::QueueSettings",
+    // The world point under the mouse, which the hover writes each frame and a cursor placement
+    // reads in its call ([`crate::spell::ScriptCursor`]).
+    "::target::PickOcclusion",
+    // The client mods' timers and tables the live reads answer from, each written by its own
+    // handler: the swing clocks, our auras on others, the totem bar and the school lockout, other
+    // units' casts and health trends, our resists and the creatures' learned immunities.
+    "::combat_timers::SwingClocks",
+    "::own_auras::OwnAuras",
+    "::totems::PlayerTotems",
+    "::totems::SchoolLockout",
+    "::unit_casts::UnitCasts",
+    "::unit_casts::HealthTrends",
+    "::unit_casts::LastResists",
+    "::immunities::Immunities",
+    // The CVar table, whose `NP_Enable*` switches the nampower events' handlers read
+    // ([`crate::nampower_events`]); the CVar verbs write it, never a handler.
+    "::cvars::Cvars",
     // `AreaPOI.dbc`, the landmark rows the gossip marker's re-select of the map reads
     // (`0x6dac93` → `0x4a67a0`, its walk at `0x4a6819`).
     "::area_poi::AreaPoiRes",
@@ -752,8 +796,10 @@ pub(super) const READ_ONLY_TO_HANDLERS: &[&str] = &[
 ];
 
 /// Every lane's queue, by type: what a handler fills there fires in the packets' order.
-pub(super) fn lane_types() -> [TypeId; 42] {
+pub(super) fn lane_types() -> [TypeId; 43] {
     [
+        // SuperWoW's and nampower's events, stamped at their packets and field edges.
+        TypeId::of::<crate::superwow::SuperWowLane>(),
         // The views lane: what each packet changed in the stores.
         TypeId::of::<crate::ui_unit::views::ViewLog>(),
         TypeId::of::<crate::field_watch::NoticeLane>(),
@@ -1051,6 +1097,7 @@ fn the_frames_drain_runs_after_the_feeds_and_before_the_tick() {
             "reputation",
             "social",
             "stable",
+            "superwow",
             "tabard",
             "taxi",
             "trade",

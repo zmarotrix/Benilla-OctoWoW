@@ -647,6 +647,8 @@ pub(super) fn plugin(app: &mut App) {
         (load_weapon_impacts, load_weapon_swings).after(AssetSet::Open),
     )
     .add_systems(Update, combat_sounds.in_set(WorldStage::Present));
+    crate::live_data::loader(app, load_weapon_impacts);
+    crate::live_data::loader(app, load_weapon_swings);
 }
 
 #[cfg(test)]

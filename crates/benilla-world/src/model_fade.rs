@@ -36,6 +36,29 @@ const BUCKETS: [(f32, f32, f32); 3] = [
     (NEVER_FADE_RADIUS, 150.0, 50.0),
 ];
 
+/// The detail distance scale, `f32` bits: the fade bands below are pushed out by it, so small
+/// doodads keep drawing farther with an extended view. 1.0 is the reference's bands.
+static DETAIL_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+/// The settable range of the detail distance scale.
+pub const DETAIL_SCALE_RANGE: std::ops::RangeInclusive<f32> = 1.0..=4.0;
+
+/// Set the detail distance scale ([`DETAIL_SCALE_RANGE`]), the `detailDistanceScale` setting.
+/// Deviation: the reference's bands are fixed.
+pub fn set_detail_scale(scale: f32) {
+    let s = if scale.is_finite() {
+        scale.clamp(*DETAIL_SCALE_RANGE.start(), *DETAIL_SCALE_RANGE.end())
+    } else {
+        1.0
+    };
+    DETAIL_SCALE.store(s.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The detail distance scale now.
+pub fn detail_scale() -> f32 {
+    f32::from_bits(DETAIL_SCALE.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 /// The distance-fade alpha of a doodad of `radius` yd (placement scale applied) whose centre is
 /// `horiz_dist` yd away in the horizontal plane (the reference ignores height). `0.0` means cull.
 pub fn doodad_fade_alpha(radius: f32, horiz_dist: f32) -> f32 {
@@ -49,7 +72,8 @@ pub fn doodad_fade_alpha(radius: f32, horiz_dist: f32) -> f32 {
         .find(|(max_r, _, _)| radius <= *max_r)
         // Unreached: the last row's bound is `NEVER_FADE_RADIUS`.
         .unwrap_or((NEVER_FADE_RADIUS, 150.0, 50.0));
-    (1.0 - (d - start) / range).clamp(0.0, 1.0)
+    let s = detail_scale();
+    (1.0 - (d - start * s) / (range * s)).clamp(0.0, 1.0)
 }
 
 /// The `(near, far)` centre distances between which [`doodad_fade_alpha`] feathers, from the same
@@ -63,7 +87,8 @@ pub fn fade_band(radius: f32) -> Option<(f32, f32)> {
         .copied()
         .find(|(max_r, _, _)| radius <= *max_r)
         .unwrap_or((NEVER_FADE_RADIUS, 150.0, 50.0));
-    Some((start + radius, start + radius + range))
+    let s = detail_scale();
+    Some((start * s + radius, start * s + radius + range * s))
 }
 
 /// A render-alpha ramp on one part's `MeshTag`, drawn on the blend twin while `α < 1`

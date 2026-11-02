@@ -220,6 +220,7 @@ impl Plugin for WorldStateUiPlugin {
                     .in_set(crate::ui_script::UiFeed)
                     .run_if(not(crate::ui_script::ingame_ui_up)),
             );
+        crate::live_data::loader(app, load_world_state_ui);
     }
 }
 

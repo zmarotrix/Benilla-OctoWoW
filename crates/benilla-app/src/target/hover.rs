@@ -145,6 +145,8 @@ pub(super) struct TargetHoverState<'w, 's> {
     self_store: Query<'w, 's, &'static ObjectStore, With<SelfPlayer>>,
     /// The unit and player filter while a word stands (`0x480610`).
     units: crate::spell::targeting::PickChecks<'w, 's>,
+    /// SuperWoW's click-through switch; absent in a harness without the target plugin.
+    click: Option<Res<'w, super::ClickConfig>>,
 }
 
 impl TargetHoverState<'_, '_> {
@@ -173,6 +175,13 @@ impl TargetHoverState<'_, '_> {
         store: Option<&ObjectStore>,
     ) -> bool {
         match kind {
+            // Deviation: SuperWoW's click-through drops an empty creature corpse.
+            EntityKind::Unit
+                if self.click.as_deref().is_some_and(|c| c.click_through)
+                    && store.is_some_and(super::clicks_through) =>
+            {
+                false
+            }
             EntityKind::Unit | EntityKind::Player => {
                 !self.excludes(is_self, store) && self.units.admits_unit(entity, store)
             }

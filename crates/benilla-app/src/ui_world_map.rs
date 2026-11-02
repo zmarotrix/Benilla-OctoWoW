@@ -590,6 +590,29 @@ impl MapPositionLive<'_, '_> {
         })
     }
 
+    /// SuperWoW's `UnitPosition`: a held unit's raw WoW position, for the player or a member of
+    /// its group alone, as SuperWoW limits it to friendly units.
+    fn world_position(&self, guid: u64) -> Option<[f32; 3]> {
+        let entity = self.index.as_deref()?.0.get(&guid).copied()?;
+        let me = self.me.single().ok() == Some(entity);
+        let grouped = self
+            .group
+            .as_deref()
+            .is_some_and(|g| g.members.iter().any(|m| m.guid == guid));
+        if !me && !grouped {
+            return None;
+        }
+        let at = if me {
+            self.player.as_deref()?.pos
+        } else {
+            self.transforms
+                .compute_global_transform(entity)
+                .ok()?
+                .translation()
+        };
+        Some(bevy_to_wow(at))
+    }
+
     /// `0x492090`'s copy of the cache: the display map `0xb4e31c` and the position, `None` with
     /// no corpse cached.
     fn corpse(&self) -> Option<benilla_ui::script::UnitMapPosition> {
@@ -607,6 +630,8 @@ impl crate::script_calls::live::LiveFamily for MapPositionLive<'_, '_> {
     fn answer(&mut self, ask: &mut benilla_ui::script::live::LiveAsk<'_>) -> bool {
         ask.answer(|q: &benilla_ui::script::UnitMapPositionQuery| Some(self.position(q.0)))
             || ask.answer(|_: &benilla_ui::script::CorpseMapPointQuery| Some(self.corpse()))
+            || ask
+                .answer(|q: &benilla_ui::script::UnitPositionQuery| Some(self.world_position(q.0)))
     }
 }
 

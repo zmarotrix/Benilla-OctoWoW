@@ -273,17 +273,70 @@ fn pace_wait(last: Option<Instant>, now: Instant, period: Duration) -> Duration 
 #[derive(Resource, Default, PartialEq, Eq, Debug)]
 pub(crate) struct RefreshPacing(pub(crate) bool);
 
-/// Sleep out the rest of the frame so a non-waiting present mode runs at the monitor's rate. A
-/// frame that overran starts the next period from now: no catch-up burst.
+/// The frame-rate caps, `maxFPS` in the foreground and `maxFPSBk` while the window is not focused,
+/// as UnitXP SP3's `FPScap` and `backgroundFPScap` give them: 0 is none. A cap saves power and
+/// heat on a laptop, and a game in the background does not need to run flat out. Deviation:
+/// 1.12.1 has neither.
+pub(crate) const CVAR_MAX_FPS: &str = "maxFPS";
+pub(crate) const CVAR_MAX_FPS_BACKGROUND: &str = "maxFPSBk";
+
+/// The caps as frames a second, mirrored from their CVars; 0 is none.
+#[derive(Resource, Default, PartialEq, Debug)]
+pub(crate) struct FpsCaps {
+    foreground: f32,
+    background: f32,
+}
+
+fn sync_fps_caps(cvars: Option<Res<crate::cvars::Cvars>>, mut caps: ResMut<FpsCaps>) {
+    // A capture measures the frame as it runs, focused or not: no cap.
+    if std::env::var_os("WOW_CAPTURE").is_some() {
+        return;
+    }
+    let Some(cvars) = cvars.as_deref() else {
+        return;
+    };
+    let read = |name: &str| {
+        cvars
+            .get(name)
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .map_or(0.0, |v| v.clamp(10.0, 1000.0))
+    };
+    let now = FpsCaps {
+        foreground: read(CVAR_MAX_FPS),
+        background: read(CVAR_MAX_FPS_BACKGROUND),
+    };
+    if *caps != now {
+        *caps = now;
+    }
+}
+
+/// The frame period a cap asks for, `None` for no cap.
+fn cap_period(fps: f32) -> Option<Duration> {
+    (fps > 0.0).then(|| Duration::from_secs_f64(1.0 / f64::from(fps)))
+}
+
+/// Sleep out the rest of the frame so a non-waiting present mode runs at the monitor's rate, and
+/// so the frame rate holds to its cap. A frame that overran starts the next period from now: no
+/// catch-up burst.
 fn pace_to_refresh(
     pacing: Res<RefreshPacing>,
+    caps: Option<Res<FpsCaps>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     monitors: Query<&Monitor>,
     mut last: Local<Option<Instant>>,
 ) {
-    if !pacing.0 {
+    let focused = windows.single().map_or(true, |w| w.focused);
+    let cap = caps
+        .as_deref()
+        .and_then(|c| cap_period(if focused { c.foreground } else { c.background }));
+    let refresh = pacing
+        .0
+        .then(|| refresh_period(monitors.iter().map(|m| m.refresh_rate_millihertz)));
+    let Some(period) = refresh.into_iter().chain(cap).max() else {
+        *last = Some(Instant::now());
         return;
-    }
-    let period = refresh_period(monitors.iter().map(|m| m.refresh_rate_millihertz));
+    };
     let wait = pace_wait(*last, Instant::now(), period);
     if !wait.is_zero() {
         // A sleep overshoots by up to a timer tick, so the last millisecond spins.
@@ -377,6 +430,8 @@ impl VideoKnobs<'_> {
             // The registry refuses a value outside the callback's range (`0x688d40`); the clamp only
             // keeps the knob in it.
             "farclip" => view.farclip = v.clamp(*FARCLIP_RANGE.start(), *FARCLIP_RANGE.end()),
+            // Benilla's detail distance: the doodad fade bands' factor.
+            "detaildistancescale" => benilla_world::model_fade::set_detail_scale(v),
             // Clamped, where the reference refuses an out-of-range write and keeps the value
             // (`0x688d90` echoes "NearClip must be in range 0.01 - 0.33" and returns 0).
             "nearclip" => view.set_nearclip(v),
@@ -479,6 +534,8 @@ impl Plugin for VideoPlugin {
         app.init_resource::<VideoConfig>()
             .init_resource::<GxRestarts>()
             .init_resource::<RefreshPacing>()
+            .init_resource::<FpsCaps>()
+            .add_systems(PreUpdate, sync_fps_caps)
             .add_systems(Last, pace_to_refresh)
             // Ahead of the glue's size callback (`ui_script::glue::watch_glue_aspect`) and of
             // every `GetCVar`, so both read the screen the window has this frame.

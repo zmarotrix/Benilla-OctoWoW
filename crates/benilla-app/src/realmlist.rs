@@ -41,9 +41,9 @@ impl Plugin for RealmlistPlugin {
 /// The CVar name, the reference's spelling.
 pub(crate) const CVAR_REALMLIST: &str = "realmList";
 
-/// Deviation: the local machine's server, not the reference's
-/// `us.logon.worldofwarcraft.com:3724`, because that host no longer resolves.
-pub(crate) const DEFAULT_REALMLIST: &str = "localhost";
+/// Deviation: OctoWoW's logon server, the address its launcher writes into `realmlist.wtf`, not
+/// the reference's `us.logon.worldofwarcraft.com:3724`, which no longer resolves.
+pub(crate) const DEFAULT_REALMLIST: &str = "play.octowow.st";
 
 /// The dialog box's `letters` cap. Deviation: 64, where the reference's login boxes cap at 16
 /// (`AccountLogin.xml`), because a hostname needs more.
@@ -266,7 +266,7 @@ mod tests {
     fn the_default_is_a_host_the_protocol_can_split() {
         let (host, port) =
             benilla_protocol::host_port(DEFAULT_REALMLIST, benilla_protocol::AUTH_PORT);
-        assert_eq!(host, "localhost");
+        assert_eq!(host, "play.octowow.st");
         assert_eq!(port, benilla_protocol::AUTH_PORT);
     }
 

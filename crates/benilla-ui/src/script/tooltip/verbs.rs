@@ -86,9 +86,12 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                     other => {
                         lua.app_data_mut::<Model>()
                             .expect("model app_data")
-                            .record_warning(format!(
-                                "SetOwner: unknown anchor '{other}' (mode 0, ANCHOR_LEFT)"
-                            ));
+                            .record_warning_once(
+                                &format!("SetOwner anchor {other}"),
+                                format!(
+                                    "SetOwner: unknown anchor '{other}' (ANCHOR_LEFT; once only)"
+                                ),
+                            );
                         TooltipAnchor::Left
                     }
                 };

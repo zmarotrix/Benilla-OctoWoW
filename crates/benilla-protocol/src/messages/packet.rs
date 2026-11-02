@@ -1317,6 +1317,8 @@ pub enum ServerPacket {
         /// [`super::pair_with_sent`] gives them.
         records: Vec<super::AddonRecord>,
     },
+    /// The server's half of the extension handshake ([`super::extensions`]).
+    ServerExtensions(super::extensions::Extensions),
     Other {
         opcode: u16,
     },
@@ -1685,6 +1687,7 @@ impl ServerPacket {
             ServerPacket::InitWorldStates(_) => "SMSG_INIT_WORLD_STATES".into(),
             ServerPacket::UpdateWorldState { .. } => "SMSG_UPDATE_WORLD_STATE".into(),
             ServerPacket::AddonInfo { .. } => "SMSG_ADDON_INFO".into(),
+            ServerPacket::ServerExtensions(_) => "SMSG_EXTENSIONS".into(),
             ServerPacket::Other { opcode } => format!("opcode {opcode:#06x}"),
         }
     }

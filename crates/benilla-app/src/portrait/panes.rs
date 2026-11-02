@@ -28,7 +28,7 @@ use super::booth::{
 use super::framing::{body_view, BodyView, PaneUnits, PortraitAnchors, PORTRAIT_FOV};
 use super::{
     booth_anchors, hand_grip, log_bake, new_target_image_sized, wake_booth, Booth, BoothCam,
-    BoothPanes, Booths, DressUpBake, DressedLook, GxAspect, PortraitStandIn, SnapKey,
+    BoothPanes, Booths, DressUpBakes, DressedLook, GxAspect, PortraitStandIn, SnapKey,
     BOOTH_SETTLE_FRAMES,
 };
 use crate::entities::Creatures;
@@ -162,7 +162,7 @@ enum Subject {
 enum Look {
     /// A mirror of a live unit or a stand-in: the snapshot key.
     Mirror(SnapKey),
-    /// The dressing room's assembly, by revision.
+    /// A dressing room's assembly, by revision.
     Assembled(u64),
 }
 
@@ -356,7 +356,7 @@ pub(super) struct PaneWorld<'w, 's> {
     me: Query<'w, 's, Entity, With<SelfPlayer>>,
     look: DressedLook<'w, 's>,
     creatures: Option<Res<'w, Creatures>>,
-    bake: Res<'w, DressUpBake>,
+    bakes: Res<'w, DressUpBakes>,
 }
 
 /// The render resources a pane build spends.
@@ -530,7 +530,7 @@ pub(super) fn sync_panes(
                     }
                 }
             }
-            let source = resolve(&world, subject, pane.kind, me, booth_pane);
+            let source = resolve(&world, subject, pane.handle, pane.kind, me, booth_pane);
             let current = source.as_ref().map(|s| look_key(&world, s));
             let stale = match (&booth_pane.built, &current) {
                 // The copy stands for this request: a re-dress (benilla's stand-in for the stock
@@ -771,8 +771,8 @@ fn sync_stand_in(
 enum Source {
     /// A unit or stand-in entity whose dressed look is mirrored.
     Mirror(Entity),
-    /// The dressing room's assembly (`DressUpModel` on the player).
-    Assembled,
+    /// A dressing room's assembly (`DressUpModel` on the player), that pane's own.
+    Assembled(FrameHandle),
 }
 
 /// The look a subject's copy is built from; `None` for a GUID the client holds no unit for, or a
@@ -780,6 +780,7 @@ enum Source {
 fn resolve(
     world: &PaneWorld,
     subject: Subject,
+    handle: FrameHandle,
     kind: FrameKind,
     me: Option<Entity>,
     pane: &PaneBooth,
@@ -787,10 +788,13 @@ fn resolve(
     match subject {
         Subject::Unit(guid) => {
             let unit = *world.index.0.get(&guid)?;
-            // The dressing room on the player wears the room's try-ons, an assembly of the
-            // player's own look, not a mirror of the player.
+            // A dressing room on the player wears its own try-ons, an assembly of the player's
+            // own look, not a mirror of the player.
             if kind == FrameKind::DressUpModel && Some(unit) == me {
-                return (!world.bake.parts.is_empty()).then_some(Source::Assembled);
+                let assembled = world.bakes.0.get(&handle);
+                return assembled
+                    .is_some_and(|b| !b.parts.is_empty())
+                    .then_some(Source::Assembled(handle));
             }
             Some(Source::Mirror(unit))
         }
@@ -818,7 +822,9 @@ fn look_key(world: &PaneWorld, source: &Source) -> Look {
                 rev,
             ))
         }
-        Source::Assembled => Look::Assembled(world.bake.revision),
+        Source::Assembled(handle) => {
+            Look::Assembled(world.bakes.0.get(handle).map_or(0, |b| b.revision))
+        }
     }
 }
 
@@ -910,8 +916,8 @@ fn build(
                 grip,
             )
         }
-        Source::Assembled => {
-            let bake = &world.bake;
+        Source::Assembled(handle) => {
+            let bake = world.bakes.0.get(handle)?;
             let booth_parts: Vec<BoothPart> = bake
                 .parts
                 .iter()

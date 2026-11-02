@@ -17,8 +17,12 @@ use super::{daynight, quantize_glow, ClockSource, GameClock, LightSampler, WowLi
 /// The scene-fog stage (`0x6cee30`): the pushed pair `end = min(zone end, farclip)` and
 /// `start = frac × end`, unclamped. The storm's negative fraction (Elwynn −0.5) floors the near
 /// field at `1 − 1/(1−frac)`, about 33% fog at the eye: the constant storm veil.
+///
+/// Deviation: past the reference's top `farclip` (777) the zone's fog end is pushed out by the
+/// same factor, so benilla's extended view distance shows; at or under 777 it is the reference's.
 fn scene_fog(fog_end_raw: f32, fog_start_frac: f32, farclip: f32) -> (f32, f32) {
-    let end = fog_end_raw.min(farclip);
+    let extend = (farclip / crate::view::REFERENCE_FARCLIP_MAX).max(1.0);
+    let end = (fog_end_raw * extend).min(farclip);
     (fog_start_frac * end, end)
 }
 

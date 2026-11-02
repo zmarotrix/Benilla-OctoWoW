@@ -1053,6 +1053,7 @@ impl Plugin for UiItemsPlugin {
                     lock_openers::feed_lock_rows.in_set(UnitFeed),
                 ),
             );
+        crate::live_data::loader(app, load_item_dbcs);
     }
 }
 

@@ -609,13 +609,23 @@ fn on_command_result(In(ev): In<SessionEvent>, mut vm: HouseVm) {
     }
 }
 
-fn on_list_result(In(ev): In<SessionEvent>, mut vm: HouseVm) {
+fn on_list_result(
+    In(ev): In<SessionEvent>,
+    mut vm: HouseVm,
+    fast: Option<Res<super::FastAuctionQueries>>,
+) {
     if let SessionEvent::AuctionListResult {
         auctions,
         total_count,
     } = ev
     {
+        let fast = fast.is_some_and(|f| f.0);
         handle(&mut vm, |auction, _| {
+            // Ahead of the list's own work, so its `AUCTION_ITEM_LIST_UPDATE` listeners find the
+            // throttle open and can page on at once.
+            if fast {
+                auction.query_gate = None;
+            }
             auction_list_result(auctions, total_count, auction);
         });
     }

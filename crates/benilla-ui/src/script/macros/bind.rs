@@ -92,6 +92,23 @@ fn quoted_call_argument(line: &str) -> Option<String> {
     Some(rest.split('"').next().unwrap_or_default().to_string())
 }
 
+/// Whether a `/cast` argument is a smart macro's: a condition group, several clauses or an action
+/// prefix ([`crate::script::smartmacro`]).
+pub(crate) fn is_smart(args: &str) -> bool {
+    let a = args.trim_start();
+    a.starts_with(['[', '!', '~', '?']) || a.contains(';')
+}
+
+/// Whether a body's bound cast is a smart macro's, its binding then following the conditions.
+pub(crate) fn is_smart_body(body: &str) -> bool {
+    macro_lines(body).any(|l| {
+        let lower = l.to_ascii_lowercase();
+        ["/cast ", "/use ", "/castsequence "]
+            .iter()
+            .any(|c| lower.starts_with(c) && is_smart(&l[c.len()..]))
+    })
+}
+
 /// The macro's cast, derived again (`0x4efe00`) from `was`: [`cast_name`] resolved as
 /// `CastSpellByName` resolves a name ([`resolve_spell_in_books`]), so the cooldown swirl and the
 /// press agree on the rank. A match writes the book it came from; a miss leaves the selector.
@@ -101,10 +118,19 @@ pub(crate) fn derive(
     player: &SpellBookState,
     pet: &PetBookState,
     was: MacroBinding,
+    choose: &dyn Fn(&str) -> Option<String>,
 ) -> MacroBinding {
-    let Some((arm, name)) = cast_name(aliases, body) else {
+    let Some((arm, mut name)) = cast_name(aliases, body) else {
         return MacroBinding { spell: 0, ..was };
     };
+    // A smart macro binds the action its conditions pick now; none passing binds nothing.
+    // Deviation: the reference binds the argument's text, which never resolves for these.
+    if arm == CastArm::Slash && is_smart(&name) {
+        match choose(&name) {
+            Some(chosen) => name = chosen,
+            None => return MacroBinding { spell: 0, ..was },
+        }
+    }
     match (resolve_spell_in_books(player, pet, &name), arm) {
         (Some(s), _) => MacroBinding {
             spell: s.spell_id as i32,
@@ -246,6 +272,7 @@ mod tests {
             book,
             &PetBookState::default(),
             MacroBinding::default(),
+            &|_| None,
         )
         .spell
     }
@@ -346,7 +373,8 @@ mod tests {
             slots: vec![named(6358, "Seduction"), named(19647, "Spell Lock")],
         };
         let at = |spell, pet_book| MacroBinding { spell, pet_book };
-        let derived = |body: &str| derive(&t, body, &player, &pet, MacroBinding::default());
+        let derived =
+            |body: &str| derive(&t, body, &player, &pet, MacroBinding::default(), &|_| None);
         assert_eq!(derived("/cast Spell Lock"), at(19647, true));
         assert_eq!(
             derived(r#"/script CastSpellByName("Spell Lock")"#),
@@ -367,6 +395,7 @@ mod tests {
                 &player,
                 &PetBookState::default(),
                 was,
+                &|_| None,
             )
         };
         assert_eq!(gone(MacroBinding::default()).spell, -1);
@@ -375,7 +404,7 @@ mod tests {
         assert!(gone(at(19647, true)).pet_book);
         assert!(!gone(MacroBinding::default()).pet_book);
         assert_eq!(
-            derive(&t, "/say hi", &player, &pet, at(19647, true)),
+            derive(&t, "/say hi", &player, &pet, at(19647, true), &|_| None),
             at(0, true)
         );
     }

@@ -143,6 +143,8 @@ fn returns(lua: &Lua, a: &AuraState, with_dispel_type: bool) -> mlua::Result<Mul
             None => Value::Nil,
         });
     }
+    // Deviation: SuperWoW's last return, the aura's spell id.
+    out.push(Value::Integer(i64::from(a.spell_id)));
     Ok(MultiValue::from_vec(out))
 }
 
@@ -245,8 +247,11 @@ impl super::UiScript {
     /// when it moved: a harness's units, or the session end's clear.
     pub fn set_unit_guids(&mut self, guids: &super::UnitGuids) {
         let mut model = self.model_mut();
-        if model.unit_guids != *guids {
+        // SuperWoW's mouseover override is the VM's own, not the pushed snapshot's.
+        let script_mouseover = model.unit_guids.script_mouseover;
+        if model.unit_guids != *guids || guids.script_mouseover != script_mouseover {
             model.unit_guids.clone_from(guids);
+            model.unit_guids.script_mouseover = script_mouseover;
         }
     }
 
@@ -474,26 +479,26 @@ mod tests {
         debuff.debuff_type = Some("Magic".into());
         s.set_unit_auras(TARGET, Some(vec![buff, debuff].into()));
 
-        let (icon, count, third) = s
-            .eval::<(String, i64, Option<String>)>(
-                r#"local a, b, c = UnitBuff("target", 1) return a, b, c"#,
+        // The stock tuple, then SuperWoW's spell id last.
+        let (icon, count, id, fourth) = s
+            .eval::<(String, i64, i64, Option<String>)>(
+                r#"local a, b, c, d = UnitBuff("target", 1) return a, b, c, d"#,
             )
             .unwrap();
         assert_eq!(icon, "Interface\\Icons\\Spell_1126");
-        assert_eq!(count, 1);
-        assert_eq!(third, None, "UnitBuff returns two values, never a third");
+        assert_eq!((count, id), (1, 1126));
+        assert_eq!(
+            fourth, None,
+            "UnitBuff returns three values, never a fourth"
+        );
 
-        let (icon, count, dispel, fourth) = s
-            .eval::<(String, i64, String, Option<String>)>(
+        let (icon, count, dispel, id) = s
+            .eval::<(String, i64, String, i64)>(
                 r#"local a, b, c, d = UnitDebuff("target", 1) return a, b, c, d"#,
             )
             .unwrap();
         assert_eq!(icon, "Interface\\Icons\\Spell_589");
-        assert_eq!((count, dispel.as_str()), (3, "Magic"));
-        assert_eq!(
-            fourth, None,
-            "UnitDebuff returns three values, never a fourth"
-        );
+        assert_eq!((count, dispel.as_str(), id), (3, "Magic", 589));
 
         // Stock `TargetFrame.lua:287-297`'s read, verbatim.
         assert!(s

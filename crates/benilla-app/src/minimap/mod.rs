@@ -381,6 +381,7 @@ fn emit_minimap(
         locks,
         poi_marker,
         pois,
+        superwow_tracked,
     ) = blip_inputs;
     // Hover resets every frame; the blip pass re-establishes it while the map draws.
     *blip_hover = blips::MinimapBlipHover::default();
@@ -721,6 +722,11 @@ fn emit_minimap(
             blips::emit_party_dots(
                 ctx, &group, &guids, &unit_pos, pet, icons, &mut quads, &mut hover,
             );
+            if let Some(tracked) = superwow_tracked.as_deref() {
+                blips::emit_tracked_units(
+                    ctx, &tracked.0, &group, &guids, &unit_pos, pet, icons, &mut quads, &mut hover,
+                );
+            }
         }
     }
     *blip_hover = hover;

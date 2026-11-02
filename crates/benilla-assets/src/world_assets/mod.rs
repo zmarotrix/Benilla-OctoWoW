@@ -726,7 +726,9 @@ impl WorldAssets {
             return Some(handle);
         }
         // World art uploads as the BLP stores it; nothing reads it main-side.
-        let chain = read_texture_native_chain(&mut self.chain.lock_recover(), &key.0).ok()?;
+        let mut chain = read_texture_native_chain(&mut self.chain.lock_recover(), &key.0).ok()?;
+        // `baseMip` 1: the model and building art from its second level, for a small GPU.
+        crate::tex_filter::skip_top_mips(&mut chain, crate::tex_filter::base_mip());
         let handle = images.add(repeat_texture_authored(crate::for_upload(chain), wrap));
         self.textures.insert(key, handle.clone());
         Some(handle)

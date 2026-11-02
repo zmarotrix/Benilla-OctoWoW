@@ -182,7 +182,7 @@ pub struct PinProof {
 }
 
 /// Send `CMD_AUTH_LOGON_CHALLENGE_Client`. `account_name` must be uppercased, as the SRP6 hashes
-/// use it; `build` is 5875. `locale` is the client's locale tag, `[0xc2a2a4]` (`0x5b2115`): the
+/// use it; `build` is [`crate::LOGON_BUILD`]. `locale` is the client's locale tag, `[0xc2a2a4]` (`0x5b2115`): the
 /// configured string packed big-endian, written like the other tags as a little-endian dword, so
 /// "enGB" reaches the wire as `B G n e`.
 pub fn write_logon_challenge(
@@ -298,10 +298,57 @@ const INTEGRITY_HASH_5875_MACOS: [u8; 20] = [
     0x1b, 0xb5, 0x13, 0xe5,
 ];
 
-/// The integrity digest `H` for `crc_salt`, known only for [`MANGOS_VERSION_CHALLENGE`].
-/// Deviation: a stored per-OS constant, not the reference's HMAC over its own executables
-/// (`0x5b1170`), because every mangos-family realmd issues this one salt.
+/// The files `0x5b1170` hashes, in its order (the table at `0x85def0`), from the install folder.
+const INTEGRITY_FILES: [&str; 5] = [
+    "WoW.exe",
+    "fmod.dll",
+    "ijl15.dll",
+    "dbghelp.dll",
+    "unicows.dll",
+];
+
+static CLIENT_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// The install folder (the one holding `WoW.exe` beside `Data`) whose binaries answer the version
+/// challenge as the reference's own do. Set once at startup; later calls are ignored.
+pub fn set_client_dir(dir: impl Into<std::path::PathBuf>) {
+    let _ = CLIENT_DIR.set(dir.into());
+}
+
+/// `0x5b1170`: HMAC-SHA1 keyed by `crc_salt` over [`INTEGRITY_FILES`] read whole, a missing file
+/// skipped as the reference skips one it cannot open (`0x5b11ed`). `None` without an install.
+fn integrity_hash_of_install(dir: &std::path::Path, crc_salt: &[u8; 16]) -> Option<[u8; 20]> {
+    if !dir.join(INTEGRITY_FILES[0]).is_file() {
+        return None;
+    }
+    let (mut ipad, mut opad) = ([0x36u8; 64], [0x5cu8; 64]);
+    for (i, k) in crc_salt.iter().enumerate() {
+        ipad[i] ^= k;
+        opad[i] ^= k;
+    }
+    let mut inner = Sha1::new();
+    inner.update(ipad);
+    for name in INTEGRITY_FILES {
+        if let Ok(bytes) = std::fs::read(dir.join(name)) {
+            inner.update(bytes);
+        }
+    }
+    let mut outer = Sha1::new();
+    outer.update(opad);
+    outer.update(inner.finalize());
+    Some(outer.finalize().into())
+}
+
+/// The integrity digest `H` for `crc_salt`: the install's own binaries when [`set_client_dir`]
+/// named one, which answers any salt as the reference does, else a stored constant known only for
+/// [`MANGOS_VERSION_CHALLENGE`].
 fn integrity_hash(crc_salt: &[u8; 16]) -> Option<[u8; 20]> {
+    if let Some(h) = CLIENT_DIR
+        .get()
+        .and_then(|dir| integrity_hash_of_install(dir, crc_salt))
+    {
+        return Some(h);
+    }
     if *crc_salt != MANGOS_VERSION_CHALLENGE {
         return None;
     }
@@ -541,6 +588,30 @@ mod tests {
             2, b'A', b'B', // account
         ]);
         assert_eq!(out, want);
+    }
+
+    /// `0x5b1170` over a fake install: HMAC-SHA1 of the five files in table order, a missing one
+    /// skipped; the vectors are Python's `hmac.new(salt, data, sha1)`.
+    #[test]
+    fn integrity_hash_is_hmac_over_the_install_binaries() {
+        let dir = std::env::temp_dir().join(format!("benilla_integrity_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let contents = ["exe", "fmod", "ijl", "dbghelp", "unicows"];
+        for (name, body) in INTEGRITY_FILES.iter().zip(contents) {
+            std::fs::write(dir.join(name), body).unwrap();
+        }
+        let hex = |h: [u8; 20]| h.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let all = integrity_hash_of_install(&dir, &MANGOS_VERSION_CHALLENGE).unwrap();
+        assert_eq!(hex(all), "4f667822c88ca797d5ff31d6176e9e0baeac3b87");
+        std::fs::remove_file(dir.join("ijl15.dll")).unwrap();
+        let skipped = integrity_hash_of_install(&dir, &MANGOS_VERSION_CHALLENGE).unwrap();
+        assert_eq!(hex(skipped), "cc8ef6b7098e44fd300c79f3c0a712e0a91ba999");
+        std::fs::remove_file(dir.join("WoW.exe")).unwrap();
+        assert_eq!(
+            integrity_hash_of_install(&dir, &MANGOS_VERSION_CHALLENGE),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

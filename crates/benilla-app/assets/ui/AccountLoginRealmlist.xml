@@ -1,9 +1,14 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
-    <!-- benilla's realmlist control on the stock login screen: a button over the Cinematics one,
-         the address the next login dials beside it, and the stock GlueDialog with its edit box to
-         change it. The address is the realmList CVar, written through ConsoleExec; the host keeps
-         BENILLA_REALMLIST and BENILLA_REALMLIST_PINNED (set while $WOW_HOST fixes the address),
-         and reopens the dialog with the typed text when it is not an address. -->
+    <!-- benilla's login screen: a launcher layout over the stock AccountLogin. A dark sidebar on
+         the left holds the logo, the sign-in card, the saved accounts (OctoWoW's AutoLogin), the
+         Addons, Settings and Mods buttons, OctoWoW's links and the realm row; the 3D scene fills
+         the rest, with the server's notices (ServerAlertFrame) on a card at its top right; a
+         shaded footer holds the version, the server's notice line and the Streamer, Lock and
+         Quit row. The realm row shows the address the next login dials (the realmList CVar,
+         written through ConsoleExec; the host keeps BENILLA_REALMLIST and
+         BENILLA_REALMLIST_PINNED, set while $WOW_HOST fixes the address), and its Change button
+         opens the stock GlueDialog with its edit box to change it. Settings uses the in-game
+         settings verbs the login screen gains (crates/benilla-ui/src/script/glue_launcher.rs). -->
     <Script>
         GlueDialogTypes["BENILLA_REALMLIST"] = {
             -- The realmList CVar's registered help text.
@@ -89,39 +94,580 @@
             end
         end
     </Script>
-    <Button name="BenillaRealmlistButton" inherits="GlueButtonSmallTemplate" parent="AccountLoginUI" text="Realmlist">
-        <Anchors>
-            <Anchor point="BOTTOM" relativeTo="AccountLoginCinematicsButton" relativePoint="TOP">
-                <Offset>
-                    <AbsDimension x="0" y="-2"/>
-                </Offset>
-            </Anchor>
-        </Anchors>
-        <Layers>
-            <Layer level="BACKGROUND">
-                <FontString name="BenillaRealmlistText" inherits="GlueFontDisableSmall" justifyH="RIGHT">
-                    <Size>
-                        <AbsDimension x="256" y="0"/>
-                    </Size>
-                    <Anchors>
-                        <Anchor point="RIGHT" relativePoint="LEFT">
-                            <Offset>
-                                <AbsDimension x="-4" y="3"/>
-                            </Offset>
-                        </Anchor>
-                    </Anchors>
-                </FontString>
-            </Layer>
-        </Layers>
-        <Scripts>
-            <OnClick>
-                BenillaRealmlist_OnClick();
-            </OnClick>
-            <OnUpdate>
+    <Script><![CDATA[
+        -- ══ The look ══════════════════════════════════════════════════════════════════════════
+        -- AutoLogin's tooltip border on every panel, over a dark fill of our own: the backdrop's
+        -- own tile is too thin over the lit scene.
+        BENILLA_LOGIN_BACKDROP = {
+            edgeFile = "Interface\\Glues\\Common\\Glue-Tooltip-Border",
+            tile = true, tileSize = 16, edgeSize = 16,
+            insets = { left = 4, right = 4, top = 4, bottom = 4 },
+        };
+        local SIDEBAR, FOOTER = 300, 110;
+        local GOLD = { 1, 0.82, 0 };
+
+        local function Fill(frame, alpha)
+            if ( frame and not frame.benillaFill ) then
+                local fill = frame:CreateTexture(nil, "BACKGROUND");
+                fill:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -4);
+                fill:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -4, 4);
+                fill:SetTexture(0, 0, 0, alpha or 0.6);
+                frame.benillaFill = fill;
+            end
+        end
+
+        local function Panel(name, parent)
+            local f = CreateFrame("Frame", name, parent);
+            f:SetBackdrop(BENILLA_LOGIN_BACKDROP);
+            Fill(f, 0.65);
+            return f;
+        end
+
+        local function Button(name, parent, text, width, onClick)
+            local b = CreateFrame("Button", name, parent, "GlueButtonSmallTemplate");
+            b:SetText(text);
+            b:SetWidth(width);
+            if ( onClick ) then
+                b:SetScript("OnClick", onClick);
+            end
+            return b;
+        end
+
+        local function Label(parent, text, font)
+            local s = parent:CreateFontString(nil, "ARTWORK", font or "GlueFontNormalSmall");
+            s:SetText(text);
+            return s;
+        end
+
+        -- ══ The sidebar ═══════════════════════════════════════════════════════════════════════
+        function BenillaLogin_Layout()
+            if ( BenillaLauncherSidebar ) then
+                BenillaLogin_FitAccounts();
+                return;
+            end
+            local base = math.max(AccountLoginAccountEdit:GetFrameLevel() - 1, 1);
+
+            local side = CreateFrame("Frame", "BenillaLauncherSidebar", AccountLoginUI);
+            side:SetFrameLevel(base);
+            side:SetPoint("TOPLEFT", AccountLoginUI, "TOPLEFT", 0, 0);
+            side:SetPoint("BOTTOMLEFT", AccountLoginUI, "BOTTOMLEFT", 0, 0);
+            side:SetWidth(SIDEBAR);
+            local bg = side:CreateTexture(nil, "BACKGROUND");
+            bg:SetAllPoints(side);
+            bg:SetTexture(0, 0, 0, 0.72);
+            local edge = side:CreateTexture(nil, "BORDER");
+            edge:SetPoint("TOPRIGHT", side, "TOPRIGHT", 0, 0);
+            edge:SetPoint("BOTTOMRIGHT", side, "BOTTOMRIGHT", 0, 0);
+            edge:SetWidth(2);
+            edge:SetTexture(GOLD[1], GOLD[2], GOLD[3], 0.35);
+
+            -- The shaded footer across the scene, beside the sidebar.
+            local footer = CreateFrame("Frame", "BenillaLoginFooter", AccountLoginUI);
+            footer:SetFrameLevel(base);
+            footer:SetPoint("BOTTOMLEFT", AccountLoginUI, "BOTTOMLEFT", SIDEBAR, 0);
+            footer:SetPoint("BOTTOMRIGHT", AccountLoginUI, "BOTTOMRIGHT", 0, 0);
+            footer:SetHeight(FOOTER);
+            local BANDS = 16;
+            for i = 1, BANDS do
+                local band = footer:CreateTexture(nil, "BACKGROUND");
+                local y = (i - 1) * FOOTER / BANDS;
+                band:SetPoint("BOTTOMLEFT", footer, "BOTTOMLEFT", 0, y);
+                band:SetPoint("BOTTOMRIGHT", footer, "BOTTOMRIGHT", 0, y);
+                band:SetHeight(FOOTER / BANDS);
+                band:SetTexture(0, 0, 0, 0.9 * (1 - (i - 1) / BANDS));
+            end
+
+            -- The version line at the sidebar's foot, in its margin.
+            AccountLoginVersion:ClearAllPoints();
+            AccountLoginVersion:SetPoint("BOTTOMLEFT", side, "BOTTOMLEFT", 12, 10);
+
+            -- The logo at the sidebar's top.
+            AccountLoginLogo:ClearAllPoints();
+            AccountLoginLogo:SetPoint("TOP", side, "TOP", 0, -6);
+
+            -- The sign-in card: the two fields (their labels ride on them) and Login.
+            AccountLoginAccountEdit:ClearAllPoints();
+            AccountLoginAccountEdit:SetPoint("TOP", AccountLoginLogo, "BOTTOM", 4, -34);
+            AccountLoginPasswordEdit:ClearAllPoints();
+            AccountLoginPasswordEdit:SetPoint("TOP", AccountLoginAccountEdit, "BOTTOM", 0, -30);
+            AccountLoginLoginButton:ClearAllPoints();
+            AccountLoginLoginButton:SetPoint("TOP", AccountLoginPasswordEdit, "BOTTOM", 4, -8);
+            local card = Panel("BenillaLoginCard", side);
+            card:SetFrameLevel(base + 1);
+            card:SetWidth(SIDEBAR - 24);
+            card:SetPoint("TOP", AccountLoginAccountEdit, "TOP", -4, 34);
+            card:SetPoint("BOTTOM", AccountLoginLoginButton, "BOTTOM", 0, -8);
+
+            -- The saved accounts under it, four rows to a page (AutoLogin's arrows page them).
+            if ( AutologinAccountsFrame ) then
+                AutologinAccountsFrame:ClearAllPoints();
+                AutologinAccountsFrame:SetPoint("TOP", card, "BOTTOM", 0, -10);
+                AutologinAccountsFrame:SetWidth(SIDEBAR - 24);
+                Fill(AutologinAccountsFrame, 0.65);
+                if ( LoginManager ) then
+                    LoginManager.PageSize = 4;
+                end
+            end
+
+            -- The realm row at the sidebar's foot.
+            local realm = CreateFrame("Frame", "BenillaRealmRow", side);
+            realm:SetPoint("BOTTOMLEFT", side, "BOTTOMLEFT", 12, 52);
+            realm:SetPoint("BOTTOMRIGHT", side, "BOTTOMRIGHT", -12, 52);
+            realm:SetHeight(24);
+            local realmLabel = Label(realm, "Realm:");
+            realmLabel:SetPoint("LEFT", realm, "LEFT", 0, 0);
+            BenillaRealmlistText = Label(realm, "", "GlueFontHighlightSmall");
+            BenillaRealmlistText:SetPoint("LEFT", realmLabel, "RIGHT", 6, 0);
+            local change = Button("BenillaRealmlistButton", realm, "Change", 80,
+                function() BenillaRealmlist_OnClick(); end);
+            change:SetHeight(26);
+            change:SetPoint("RIGHT", realm, "RIGHT", 0, -1);
+            realm:SetScript("OnUpdate", function()
                 if ( BenillaRealmlistText:GetText() ~= BENILLA_REALMLIST ) then
                     BenillaRealmlistText:SetText(BENILLA_REALMLIST);
                 end
-            </OnUpdate>
+            end);
+
+            -- OctoWoW's links, as one row of text buttons over the realm row.
+            local links = { { "Website", "http://octowow.st/" },
+                            { "Database", "http://octowow.st/db/" },
+                            { "Community", "http://octowow.st/social" } };
+            local prev;
+            for i, link in ipairs(links) do
+                local url = link[2];
+                local b = CreateFrame("Button", "BenillaLauncherLink"..i, side);
+                b:SetHeight(18);
+                b:SetTextFontObject(GlueFontNormalSmall);
+                b:SetHighlightTextColor(1, 1, 1);
+                b:SetText(link[1]);
+                b:SetWidth(b:GetFontString():GetStringWidth() + 4);
+                b:SetScript("OnClick", function()
+                    PlaySound("gsLoginNewAccount");
+                    LaunchURL(url);
+                end);
+                if ( prev ) then
+                    b:SetPoint("LEFT", prev, "RIGHT", 16, 0);
+                else
+                    b:SetPoint("BOTTOMLEFT", realm, "TOPLEFT", 0, 10);
+                end
+                prev = b;
+            end
+
+            -- Addons, Settings and Mods over the links.
+            local third = (SIDEBAR - 24 - 8) / 3;
+            local addons = Button("BenillaLauncherAddons", side, "Addons", third, function()
+                PlaySound("gsLoginNewAccount");
+                AddonList:Show();
+            end);
+            addons:SetPoint("BOTTOMLEFT", realm, "TOPLEFT", -4, 34);
+            local settings = Button("BenillaLauncherSettingsButton", side, "Settings", third,
+                function() PlaySound("gsLoginNewAccount"); BenillaLauncherSettings_Toggle(); end);
+            settings:SetPoint("LEFT", addons, "RIGHT", 4, 0);
+            local mods = Button("BenillaLauncherModsButton", side, "Mods", third,
+                function() PlaySound("gsLoginNewAccount"); BenillaLauncherMods_Toggle(); end);
+            mods:SetPoint("LEFT", settings, "RIGHT", 4, 0);
+
+            -- The announcement feed: the stock server notice window, a card at the scene's top
+            -- right, holding the live login notice and then the kept announcements.
+            if ( ServerAlertFrame ) then
+                ServerAlertFrame:ClearAllPoints();
+                ServerAlertFrame:SetPoint("TOPRIGHT", AccountLoginUI, "TOPRIGHT", -10, -10);
+                ServerAlertFrame:SetHeight(480);
+                ServerAlertFrame:SetBackdrop(BENILLA_LOGIN_BACKDROP);
+                Fill(ServerAlertFrame, 0.65);
+                ServerAlertTitle:SetText("Announcements");
+                -- Registered after the stock screen, so its handler has shown the notice first.
+                local feed = CreateFrame("Frame", "BenillaAnnouncementFeed", AccountLoginUI);
+                feed:RegisterEvent("SHOW_SERVER_ALERT");
+                feed:SetScript("OnEvent", function()
+                    BENILLA_SERVER_NOTICE = arg1;
+                    BenillaAnnouncements_Update();
+                end);
+                feed:SetScript("OnUpdate", function()
+                    if ( this.serial ~= BENILLA_ANNOUNCEMENTS_SERIAL ) then
+                        this.serial = BENILLA_ANNOUNCEMENTS_SERIAL;
+                        BenillaAnnouncements_Update();
+                    end
+                end);
+            end
+
+            BenillaLogin_FitAccounts();
+        end
+
+        -- The feed's page: the login notice (the server's own markup, its outer tags dropped)
+        -- under its own heading, then each kept announcement under its date, newest first. With
+        -- neither, the card stays hidden.
+        local function Escape(text)
+            text = string.gsub(text, "&", "&amp;");
+            text = string.gsub(text, "<", "&lt;");
+            text = string.gsub(text, ">", "&gt;");
+            return text;
+        end
+
+        function BenillaAnnouncements_Update()
+            if ( not ServerAlertFrame ) then
+                return;
+            end
+            local parts = { "<html><body>" };
+            local notice = BENILLA_SERVER_NOTICE;
+            if ( notice and notice ~= "" ) then
+                -- Paragraph and line breaks kept as breaks, every other tag dropped.
+                notice = string.gsub(notice, "<[Bb][Rr]%s*/?>", "\n");
+                notice = string.gsub(notice, "</[Pp]>", "\n");
+                notice = string.gsub(notice, "<[^>]*>", "");
+                notice = string.gsub(notice, "^%s+", "");
+                notice = string.gsub(notice, "%s+$", "");
+                if ( notice ~= "" ) then
+                    table.insert(parts, "<h2>Server notice</h2>");
+                    for line in string.gfind(notice, "[^\n]+") do
+                        table.insert(parts, "<p>"..Escape(line).."</p>");
+                    end
+                    table.insert(parts, "<br/>");
+                end
+            end
+            local rows = BENILLA_ANNOUNCEMENTS or {};
+            for _, row in ipairs(rows) do
+                table.insert(parts, "<h2>"..Escape(row.time).."</h2>");
+                table.insert(parts, "<p>"..Escape(row.text).."</p><br/>");
+            end
+            if ( table.getn(parts) == 1 ) then
+                ServerAlertFrame:Hide();
+                return;
+            end
+            table.insert(parts, "</body></html>");
+            ServerAlertText:SetText(table.concat(parts));
+            ServerAlertScrollFrame:UpdateScrollChildRect();
+            ServerAlertFrame:Show();
+        end
+
+        -- AutoLogin's rows stand 47 apart from 30 under the list's top, 60 tall less a 15-pixel
+        -- hit inset, its Remove button and page arrows in the bottom 45: the list is fitted to
+        -- the rows shown, one at least, and the rows past a page are hidden.
+        function BenillaLogin_FitAccounts()
+            if ( not AutologinAccountsFrame ) then
+                return;
+            end
+            local page = (LoginManager and LoginManager.PageSize) or 9;
+            local rows = 0;
+            for i = 1, 9 do
+                local row = getglobal("AutologinAccountButton"..i);
+                if ( row and i > page ) then
+                    row:Hide();
+                elseif ( row and row:IsShown() ) then
+                    rows = i;
+                end
+            end
+            AutologinAccountsFrame:SetHeight(30 + 47 * math.max(rows, 1) + 13 + 45);
+        end
+
+        -- ══ Windows ═══════════════════════════════════════════════════════════════════════════
+        -- A modal window over the screen, as the stock AddonList is: a dimmed cover, a panel in
+        -- the middle, its rows stacked from the top, Close (and Escape) at the bottom.
+        local function Window(name, title, width)
+            local cover = CreateFrame("Frame", name, GlueParent);
+            cover:SetAllPoints(GlueParent);
+            cover:SetFrameStrata("DIALOG");
+            cover:EnableMouse(true);
+            cover:EnableKeyboard(true);
+            cover:Hide();
+            local dim = cover:CreateTexture(nil, "BACKGROUND");
+            dim:SetAllPoints(cover);
+            dim:SetTexture(0, 0, 0, 0.6);
+            local panel = Panel(name.."Panel", cover);
+            panel:SetWidth(width);
+            panel:SetPoint("CENTER", cover, "CENTER", 0, 0);
+            local head = Label(panel, title, "GlueFontNormalLarge");
+            head:SetPoint("TOP", panel, "TOP", 0, -16);
+            local close = Button(name.."Close", panel, "Close", 110, function()
+                PlaySound("gsLoginChangeRealmCancel");
+                cover:Hide();
+            end);
+            close:SetPoint("BOTTOM", panel, "BOTTOM", 0, 14);
+            cover:SetScript("OnKeyDown", function()
+                if ( arg1 == "ESCAPE" or arg1 == "ENTER" ) then
+                    close:Click();
+                end
+            end);
+            cover.panel, cover.rows = panel, {};
+            return cover;
+        end
+
+        -- Stack `row` under the window's last row, the panel's width less its margins.
+        local function AddRow(w, row)
+            local last = w.rows[table.getn(w.rows)];
+            row:SetPoint("LEFT", w.panel, "LEFT", 24, 0);
+            row:SetPoint("RIGHT", w.panel, "RIGHT", -24, 0);
+            if ( last ) then
+                row:SetPoint("TOP", last, "BOTTOM", 0, -4);
+            else
+                row:SetPoint("TOP", w.panel, "TOP", 0, -46);
+            end
+            table.insert(w.rows, row);
+        end
+
+        -- The panel's height to its rows: the title above, Close below.
+        local function FitWindow(w)
+            local h = 46 + 56;
+            for _, row in ipairs(w.rows) do
+                h = h + row:GetHeight() + 4;
+            end
+            w.panel:SetHeight(h);
+        end
+
+        local function Row(w, height)
+            local row = CreateFrame("Frame", nil, w.panel);
+            row:SetHeight(height);
+            AddRow(w, row);
+            return row;
+        end
+
+        local function Heading(w, text)
+            local row = Row(w, 26);
+            local s = Label(row, text, "GlueFontNormal");
+            s:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 3);
+            local line = row:CreateTexture(nil, "ARTWORK");
+            line:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0);
+            line:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 0);
+            line:SetHeight(1);
+            line:SetTexture(GOLD[1], GOLD[2], GOLD[3], 0.35);
+        end
+
+        -- A labelled button that steps through a setting's values, showing the current one.
+        local function Cycler(w, name, label, read, step)
+            local row = Row(w, 28);
+            Label(row, label):SetPoint("LEFT", row, "LEFT", 0, 0);
+            local b = Button(name, row, "", 190, nil);
+            b:SetHeight(26);
+            b:SetPoint("RIGHT", row, "RIGHT", 0, 0);
+            row.refresh = function() b:SetText(read()); end;
+            b:SetScript("OnClick", function()
+                PlaySound("igMainMenuOptionCheckBoxOn");
+                step();
+                row.refresh();
+            end);
+        end
+
+        local function Slider(w, name, label, cvar)
+            local row = Row(w, 28);
+            Label(row, label):SetPoint("LEFT", row, "LEFT", 0, 0);
+            local s = CreateFrame("Slider", name, row);
+            s:SetOrientation("HORIZONTAL");
+            s:SetWidth(170);
+            s:SetHeight(17);
+            s:SetPoint("RIGHT", row, "RIGHT", -40, 0);
+            s:SetBackdrop({
+                bgFile = "Interface\\Buttons\\UI-SliderBar-Background",
+                edgeFile = "Interface\\Buttons\\UI-SliderBar-Border",
+                tile = true, tileSize = 8, edgeSize = 8,
+                insets = { left = 3, right = 3, top = 6, bottom = 6 },
+            });
+            s:SetThumbTexture("Interface\\Buttons\\UI-SliderBar-Button-Horizontal");
+            s:SetMinMaxValues(0, 1);
+            s:SetValueStep(0.05);
+            local value = Label(row, "", "GlueFontHighlightSmall");
+            value:SetPoint("RIGHT", row, "RIGHT", 0, 0);
+            s:SetScript("OnValueChanged", function()
+                local v = this:GetValue();
+                value:SetText(math.floor(v * 100 + 0.5).."%");
+                if ( not row.loading ) then
+                    SetCVar(cvar, v);
+                end
+            end);
+            row.refresh = function()
+                row.loading = true;
+                s:SetValue(tonumber(GetCVar(cvar)) or 0);
+                row.loading = nil;
+            end;
+        end
+
+        local function Check(w, name, label, cvar, onChange)
+            local row = Row(w, 28);
+            Label(row, label):SetPoint("LEFT", row, "LEFT", 0, 0);
+            local c = CreateFrame("CheckButton", name, row);
+            c:SetWidth(26);
+            c:SetHeight(26);
+            c:SetPoint("RIGHT", row, "RIGHT", 0, 0);
+            c:SetNormalTexture("Interface\\Buttons\\UI-CheckBox-Up");
+            c:SetPushedTexture("Interface\\Buttons\\UI-CheckBox-Down");
+            c:SetHighlightTexture("Interface\\Buttons\\UI-CheckBox-Highlight", "ADD");
+            c:SetCheckedTexture("Interface\\Buttons\\UI-CheckBox-Check");
+            c:SetScript("OnClick", function()
+                if ( this:GetChecked() ) then
+                    SetCVar(cvar, "1");
+                else
+                    SetCVar(cvar, "0");
+                end
+                if ( onChange ) then
+                    onChange();
+                end
+            end);
+            row.refresh = function() c:SetChecked(GetCVar(cvar) == "1"); end;
+        end
+
+        -- ══ Settings ══════════════════════════════════════════════════════════════════════════
+        -- What a player wants set before choosing a character: the display, the sound, the time
+        -- of day, and the launcher's tools. A display change restarts the renderer at once.
+        local DISPLAY_MODES = {
+            { "Windowed", "1", "0" },
+            { "Windowed (maximized)", "1", "1" },
+            { "Fullscreen", "0", "0" },
+        };
+
+        local function DisplayModeIndex()
+            local window, maximize = GetCVar("gxWindow"), GetCVar("gxMaximize");
+            for i, m in ipairs(DISPLAY_MODES) do
+                if ( m[2] == window and (window == "0" or m[3] == maximize) ) then
+                    return i;
+                end
+            end
+            return 1;
+        end
+
+        local TIME_OF_DAY = { "Server time", "Local time", "Fixed time" };
+
+        local function BuildSettings()
+            local w = Window("BenillaLauncherSettings", "Settings", 440);
+            Heading(w, "Display");
+            Cycler(w, "BenillaLauncherDisplayMode", "Display mode",
+                function() return DISPLAY_MODES[DisplayModeIndex()][1]; end,
+                function()
+                    local m = DISPLAY_MODES[math.mod(DisplayModeIndex(), 3) + 1];
+                    SetCVar("gxWindow", m[2]);
+                    SetCVar("gxMaximize", m[3]);
+                    RestartGx();
+                end);
+            Cycler(w, "BenillaLauncherResolution", "Resolution",
+                function()
+                    local list = { GetScreenResolutions() };
+                    local i = GetCurrentResolution();
+                    return (i and list[i]) or GetCVar("gxResolution");
+                end,
+                function()
+                    local count = table.getn({ GetScreenResolutions() });
+                    if ( count > 0 ) then
+                        SetScreenResolution(math.mod(GetCurrentResolution() or 0, count) + 1);
+                        RestartGx();
+                    end
+                end);
+            Check(w, "BenillaLauncherVSync", "Vertical sync", "gxVSync",
+                function() RestartGx(); end);
+            Heading(w, "Sound");
+            Slider(w, "BenillaLauncherMaster", "Master volume", "MasterVolume");
+            Slider(w, "BenillaLauncherMusic", "Music", "MusicVolume");
+            Slider(w, "BenillaLauncherEffects", "Sound effects", "SoundVolume");
+            Slider(w, "BenillaLauncherAmbience", "Ambience", "AmbienceVolume");
+            Check(w, "BenillaLauncherMusicOn", "Play music", "EnableMusic");
+            Heading(w, "World");
+            Cycler(w, "BenillaLauncherTimeOfDay", "Time of day",
+                function()
+                    return TIME_OF_DAY[(tonumber(GetCVar("timeOfDay")) or 0) + 1] or TIME_OF_DAY[1];
+                end,
+                function()
+                    SetCVar("timeOfDay", math.mod((tonumber(GetCVar("timeOfDay")) or 0) + 1, 3));
+                end);
+            Heading(w, "Tools");
+            local tools = Row(w, 76);
+            local half = (440 - 48 - 6) / 2;
+            local clear = Button("BenillaLauncherClearCache", tools, "Clear cache", half,
+                function()
+                    PlaySound("igMainMenuOptionCheckBoxOn");
+                    BenillaClearCache();
+                    this:SetText("Cache cleared");
+                end);
+            clear:SetPoint("TOPLEFT", tools, "TOPLEFT", 0, -2);
+            local addonsDir = Button("BenillaLauncherOpenAddOns", tools, "AddOns folder", half,
+                function() BenillaOpenFolder("AddOns"); end);
+            addonsDir:SetPoint("LEFT", clear, "RIGHT", 6, 0);
+            local shots = Button("BenillaLauncherOpenShots", tools, "Screenshots folder", half,
+                function() BenillaOpenFolder("Screenshots"); end);
+            shots:SetPoint("TOPLEFT", clear, "BOTTOMLEFT", 0, -2);
+            local logs = Button("BenillaLauncherOpenLogs", tools, "Logs folder", half,
+                function() BenillaOpenFolder("Logs"); end);
+            logs:SetPoint("LEFT", shots, "RIGHT", 6, 0);
+            FitWindow(w);
+            w:SetScript("OnShow", function()
+                for _, row in ipairs(this.rows) do
+                    if ( row.refresh ) then
+                        row.refresh();
+                    end
+                end
+                BenillaLauncherClearCache:SetText("Clear cache");
+            end);
+            return w;
+        end
+
+        function BenillaLauncherSettings_Toggle()
+            local w = BenillaLauncherSettings or BuildSettings();
+            if ( w:IsShown() ) then
+                w:Hide();
+            else
+                w:Show();
+            end
+        end
+
+        -- ══ Mods ══════════════════════════════════════════════════════════════════════════════
+        -- OctoWoW's client mods and how much of each Benilla builds in: none is installed or
+        -- loaded.
+        local MODS = {
+            { "SuperWoW", "Built in", "GUID units, cast events, spell info, combat log, tracking" },
+            { "nampower", "Built in", "Spell and unit events, cooldown, range and cast reads" },
+            { "UnitXP SP3", "Not yet", "Line of sight and distance checks" },
+            { "VanillaFixes, DXVK", "Not needed", "Benilla's own renderer and timing replace them" },
+            { "Vanilla Tweaks", "Partly", "Field of view and sound channels are still to come" },
+        };
+
+        local function BuildMods()
+            local w = Window("BenillaLauncherMods", "Built-in client mods", 520);
+            local intro = Row(w, 34);
+            local line = Label(intro, "Built into the client: addons that use these work with "
+                .."nothing to install.", "GlueFontHighlightSmall");
+            line:SetPoint("TOPLEFT", intro, "TOPLEFT", 0, 0);
+            line:SetPoint("TOPRIGHT", intro, "TOPRIGHT", 0, 0);
+            line:SetJustifyH("LEFT");
+            for _, mod in ipairs(MODS) do
+                local row = Row(w, 36);
+                local name = Label(row, mod[1], "GlueFontNormal");
+                name:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0);
+                local status = Label(row, mod[2], "GlueFontHighlightSmall");
+                status:SetPoint("TOPRIGHT", row, "TOPRIGHT", 0, -2);
+                if ( mod[2] == "Built in" or mod[2] == "Not needed" ) then
+                    status:SetTextColor(0.3, 1, 0.3);
+                else
+                    status:SetTextColor(1, 0.6, 0.2);
+                end
+                local what = Label(row, mod[3], "GlueFontDisableSmall");
+                what:SetPoint("TOPLEFT", name, "BOTTOMLEFT", 0, -3);
+            end
+            FitWindow(w);
+            return w;
+        end
+
+        function BenillaLauncherMods_Toggle()
+            local w = BenillaLauncherMods or BuildMods();
+            if ( w:IsShown() ) then
+                w:Hide();
+            else
+                w:Show();
+            end
+        end
+    ]]></Script>
+
+    <!-- The layout's driver: built at load, AutoLogin's list refitted after each of its redraws. -->
+    <Frame name="BenillaLoginLayoutDriver" parent="AccountLoginUI">
+        <Scripts>
+            <OnLoad>
+                BenillaLogin_Layout();
+                if ( LoginManager and LoginManager.UpdateUI ) then
+                    local Ref_UpdateUI = LoginManager.UpdateUI;
+                    LoginManager.UpdateUI = function(manager)
+                        Ref_UpdateUI(manager);
+                        BenillaLogin_FitAccounts();
+                    end
+                end
+            </OnLoad>
+            <OnShow>
+                BenillaLogin_Layout();
+            </OnShow>
         </Scripts>
-    </Button>
+    </Frame>
 </Ui>

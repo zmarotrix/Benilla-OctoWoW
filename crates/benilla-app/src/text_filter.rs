@@ -980,5 +980,6 @@ impl Plugin for TextFilterPlugin {
                     .after(benilla_assets::AssetSet::Open)
                     .in_set(TextFilterLoad),
             );
+        crate::live_data::loader(app, load_text_filter_lists);
     }
 }

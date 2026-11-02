@@ -251,10 +251,7 @@ impl ObjectFields {
     /// `PLAYER_QUEST_LOG_<slot+1>_*`: one quest-log slot, `quest_id == 0` when the server cleared
     /// it; the count-state and timer are written with the id (`Player.h:1094-1099`).
     pub fn player_quest_log(&self, slot: u8) -> Option<QuestLogSlot> {
-        if slot >= PLAYER_QUEST_LOG_SLOTS {
-            return None;
-        }
-        let base = FIELD_PLAYER_QUEST_LOG_1_1 + 3 * u16::from(slot);
+        let base = quest_log_slot_field(slot)?;
         let quest_id = self.get_u32(base)?;
         let count_state = self.get_u32(base + 1).unwrap_or(0);
         let timer = self.get_u32(base + 2).unwrap_or(0);
@@ -274,10 +271,8 @@ impl ObjectFields {
     /// flags `GROUP_ONLY` (`UpdateFields_1_12_1.h:128-129`).
     pub fn player_quest_log_window(&self) -> [[u32; 3]; PLAYER_QUEST_LOG_SLOTS as usize] {
         std::array::from_fn(|slot| {
-            std::array::from_fn(|k| {
-                self.get_u32(FIELD_PLAYER_QUEST_LOG_1_1 + 3 * slot as u16 + k as u16)
-                    .unwrap_or(0)
-            })
+            let base = quest_log_slot_field(slot as u8).unwrap_or_default();
+            std::array::from_fn(|k| self.get_u32(base + k as u16).unwrap_or(0))
         })
     }
     /// `PLAYER_EXPLORED_ZONES_1 + i`: bitset dword `i`; bit `n` is `AreaTable` explore flag `n`.

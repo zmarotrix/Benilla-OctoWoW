@@ -1692,6 +1692,14 @@ fn parse_server_body(
         opcode::SMSG_ADDON_INFO => ServerPacket::AddonInfo {
             records: read_addon_info(&mut r),
         },
+        // A body without the tag is a stray lottery reply, read past like any opcode with no arm.
+        super::extensions::SMSG_EXTENSIONS => match super::extensions::Extensions::decode(r) {
+            Some(ext) => {
+                r = &[];
+                ServerPacket::ServerExtensions(ext)
+            }
+            None => ServerPacket::Other { opcode },
+        },
         other => ServerPacket::Other { opcode: other },
     };
     *cursor = r;

@@ -635,6 +635,32 @@ pub(crate) fn seat_glue_addons(
     script.set_addon_state_files(Box::new(AppAddonFiles));
 }
 
+/// The characters of `realm` the host keeps an enable file for, the login screen's addon manager's
+/// "All" before a character list arrives ([`UiScript::seat_launcher_addons`]).
+pub(crate) fn known_characters(realm: &str) -> Vec<String> {
+    // `<Realm>-x.txt` names the folder, and the realm's token and suffix around a character's.
+    let Some(probe) = crate::local_state::addons_state_path(realm, "x") else {
+        return Vec::new();
+    };
+    let (Some(dir), Some(name)) = (probe.parent(), probe.file_name().and_then(|n| n.to_str()))
+    else {
+        return Vec::new();
+    };
+    let prefix = &name[..name.len() - "x.txt".len()];
+    let mut out: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let file = e.file_name().into_string().ok()?;
+            let character = file.strip_prefix(prefix)?.strip_suffix(".txt")?;
+            (!character.is_empty()).then(|| character.to_string())
+        })
+        .collect();
+    out.sort();
+    out
+}
+
 /// A node per character, each from its own file; a character with no file still gets one.
 pub(crate) fn load_store(realm: &str, characters: &[String]) -> EnableStore {
     EnableStore::load(realm, characters, &AppAddonFiles)

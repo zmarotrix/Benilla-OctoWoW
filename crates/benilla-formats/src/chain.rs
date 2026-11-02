@@ -2,8 +2,10 @@
 //! read resolves a name to the highest-priority archive holding it, so a patch wins; base archives
 //! carry no `(listfile)`, so resolution is by name hash.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 use anyhow::{anyhow, bail, Context, Result};
 use benilla_mpq::Archive;
@@ -22,6 +24,41 @@ pub struct Chain {
     archives: Vec<Archive>,
     /// The locale the chain's `Wow.ini` names, read once at open as start-up reads it once.
     locale: Locale,
+}
+
+/// Archives every later [`Chain::open`] of a `Data` folder mounts above the whole install, in order.
+static OVERLAY: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
+
+/// Mount `archives` above the install's chain in every chain opened from now on: a server's
+/// streamed content (`benilla-content`), set once at boot before any chain opens. Deviation:
+/// 1.12.1 mounts only what its `Data` folder holds.
+pub fn set_overlay(archives: Vec<PathBuf>) {
+    *OVERLAY.write().unwrap_or_else(|e| e.into_inner()) = archives;
+}
+
+thread_local! {
+    /// The names this thread's chains look up while [`record_reads`] runs.
+    static READS: RefCell<Option<HashSet<String>>> = const { RefCell::new(None) };
+}
+
+/// A chain name as lookups compare it: any case, `/` and `\` alike.
+pub fn chain_name(name: &str) -> String {
+    name.replace('/', "\\").to_ascii_lowercase()
+}
+
+/// Run `f` and return, with its result, every name ([`chain_name`]) a chain looked up on this
+/// thread meanwhile, found or not: what a loader depends on, so streamed content can tell which
+/// loaders a changed file touches.
+pub fn record_reads<R>(f: impl FnOnce() -> R) -> (R, HashSet<String>) {
+    let outer = READS.with(|r| r.borrow_mut().replace(HashSet::new()));
+    let result = f();
+    let names = READS.with(|r| std::mem::replace(&mut *r.borrow_mut(), outer));
+    (result, names.unwrap_or_default())
+}
+
+/// What [`set_overlay`] last set.
+pub fn overlay() -> Vec<PathBuf> {
+    OVERLAY.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// `patch-?.MPQ` as the reference's `FindFirstFileW` glob matches it (template `0x82edbc`, wrapper
@@ -69,6 +106,12 @@ impl Chain {
     /// only a failing patch archive is skipped, silently; benilla fails on that too, because a
     /// skipped corrupt archive surfaces only as missing files far downstream.
     pub fn open(path: &Path) -> Result<Self> {
+        let overlay = OVERLAY.read().unwrap_or_else(|e| e.into_inner()).clone();
+        Self::open_with(path, &overlay)
+    }
+
+    /// [`Chain::open`] with `overlay` mounted above a `Data` folder's archives ([`set_overlay`]).
+    fn open_with(path: &Path, overlay: &[PathBuf]) -> Result<Self> {
         let mut archives = Vec::new();
         if path.is_dir() {
             let mut names: Vec<String> = std::fs::read_dir(path)
@@ -91,6 +134,11 @@ impl Chain {
             if archives.is_empty() {
                 bail!("no known vanilla MPQs found in {}", path.display());
             }
+            for mpq in overlay {
+                archives.push(
+                    Archive::open(mpq).with_context(|| format!("opening {}", mpq.display()))?,
+                );
+            }
         } else {
             archives.push(
                 Archive::open(path).with_context(|| format!("opening MPQ {}", path.display()))?,
@@ -102,6 +150,32 @@ impl Chain {
         };
         chain.locale = crate::wow_ini::client_locale(&chain);
         Ok(chain)
+    }
+
+    /// Mount `archive` above everything in this open chain: streamed content arriving while the
+    /// client runs. Deviation: 1.12.1 mounts its archives once, at start.
+    pub fn mount_top(&mut self, archive: &Path) -> Result<()> {
+        self.archives.push(
+            Archive::open(archive).with_context(|| format!("opening {}", archive.display()))?,
+        );
+        Ok(())
+    }
+
+    /// The names the mounted archive at `archive` lists in its own `(listfile)`, as written; none
+    /// for an archive this chain does not hold or one with no listfile.
+    pub fn listed_in(&self, archive: &Path) -> Vec<String> {
+        let Some(a) = self.archives.iter().find(|a| a.path() == archive) else {
+            return Vec::new();
+        };
+        let Ok(listfile) = a.read_file("(listfile)") else {
+            return Vec::new();
+        };
+        String::from_utf8_lossy(&listfile)
+            .split([';', '\r', '\n'])
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(str::to_string)
+            .collect()
     }
 
     /// The client locale, from the chain's `Wow.ini` (`0x402350`): its index picks the column of
@@ -120,6 +194,11 @@ impl Chain {
     /// The highest-priority archive with an entry for `name`, a delete marker included, as a
     /// tombstone shadows every lower copy: check [`Archive::is_delete_marker`] for a readable file.
     fn resolve(&self, name: &str) -> Option<&Archive> {
+        READS.with(|r| {
+            if let Some(names) = r.borrow_mut().as_mut() {
+                names.insert(chain_name(name));
+            }
+        });
         self.archives.iter().rev().find(|a| a.contains(name))
     }
 
@@ -413,6 +492,55 @@ mod tests {
                 "X\\speech2.MPQ",
                 "X\\interface.MPQ"
             ]
+        );
+    }
+
+    /// An overlay archive mounts above the whole install: its copy of a file wins, and the files it
+    /// lacks still read from the install.
+    #[test]
+    fn an_overlay_archive_wins_over_the_install() {
+        let dir = std::env::temp_dir().join(format!(
+            "benilla-chain-overlay-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Data")).unwrap();
+        std::fs::write(
+            dir.join("Data").join("patch.MPQ"),
+            fixture_mpq(&[("A.txt", b"install"), ("B.txt", b"install")]),
+        )
+        .unwrap();
+        let pack = dir.join("pack.mpq");
+        std::fs::write(&pack, fixture_mpq(&[("A.txt", b"server")])).unwrap();
+        let mut chain =
+            Chain::open_with(&dir.join("Data"), &[pack]).expect("open with the overlay");
+        let (a, b) = (chain.read("a.txt").unwrap(), chain.read("B.txt").unwrap());
+        // A pack mounted into the open chain wins over everything before it.
+        let hotfix = dir.join("hotfix.mpq");
+        std::fs::write(&hotfix, fixture_mpq(&[("B.txt", b"hotfix")])).unwrap();
+        chain.mount_top(&hotfix).expect("mount the hotfix");
+        assert_eq!(
+            chain.listed_in(&hotfix),
+            Vec::<String>::new(),
+            "no listfile"
+        );
+        // A recording sees each name looked up, in chain form, found or not.
+        let ((), seen) = record_reads(|| {
+            let _ = chain.read("Dir/B.txt");
+            let _ = chain.contains("missing.txt");
+        });
+        assert_eq!(
+            seen,
+            HashSet::from(["dir\\b.txt".to_string(), "missing.txt".to_string()])
+        );
+        let (a2, b2) = (chain.read("a.txt").unwrap(), chain.read("B.txt").unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(a, b"server");
+        assert_eq!(b, b"install");
+        assert_eq!(
+            (a2.as_slice(), b2.as_slice()),
+            (&b"server"[..], &b"hotfix"[..])
         );
     }
 

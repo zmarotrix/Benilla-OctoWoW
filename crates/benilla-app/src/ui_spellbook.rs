@@ -45,6 +45,7 @@ pub(crate) struct UiSpellbookPlugin;
 impl Plugin for UiSpellbookPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, load_skill_lines.after(AssetSet::Open));
+        crate::live_data::loader(app, load_skill_lines);
     }
 }
 
@@ -408,8 +409,13 @@ fn leading_number(s: &str) -> u32 {
 
 /// `CastSpell(id, "spell", onSelf)` and `CastSpellByName(name, onSelf)` (`0x4b3300`'s player leg),
 /// through the cast tail the action bar uses, at the selection as the calls before it left it, or
-/// with `onSelf` at the caster.
-pub(crate) fn cast_spell(cast: &mut crate::spell::ScriptCast, spell_id: u32, on_self: bool) {
+/// with `onSelf` at the caster, or with SuperWoW's unit argument at that unit's guid.
+pub(crate) fn cast_spell(
+    cast: &mut crate::spell::ScriptCast,
+    spell_id: u32,
+    on_self: bool,
+    unit: Option<u64>,
+) {
     let crate::spell::ScriptCast { targeting, ladder } = cast;
     // `CastSpell`'s three forks ahead of the cast (`0x4b3300`), in order, all ahead of the gate:
     // the active-action toggle (`0x4b36f0`), the stop of the targeting cursor this spell armed
@@ -457,11 +463,17 @@ pub(crate) fn cast_spell(cast: &mut crate::spell::ScriptCast, spell_id: u32, on_
         }
     }
     debug!(
-        "ui_spellbook: cast {spell_id} (target {:?}{})",
+        "ui_spellbook: cast {spell_id} (target {:?}{}{})",
         targeting.selection.guid,
-        if on_self { ", on self" } else { "" }
+        if on_self { ", on self" } else { "" },
+        unit.map(|g| format!(", at unit {g:#x}"))
+            .unwrap_or_default()
     );
-    ladder.send_spell(spell_id, &targeting.context().self_bound(on_self), on_self);
+    let context = match unit {
+        Some(guid) => targeting.context_at_guid(guid),
+        None => targeting.context().self_bound(on_self),
+    };
+    ladder.send_spell(spell_id, &context, on_self);
 }
 
 #[cfg(test)]

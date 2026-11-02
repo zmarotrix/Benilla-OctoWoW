@@ -1,3 +1,49 @@
+# Benilla for OctoWoW
+
+A fork of [benilla](https://github.com/samwhosung/benilla), the from-scratch World of Warcraft
+1.12.1 client in Rust, built for the OctoWoW server. Every OctoWoW client mod is built into the
+client itself: nampower (spell queueing), SuperWoW, UnitXP_SP3, perf_boost, ClassicAPI and the
+SuperCleveRoidMacros conditions. Addons written for those mods work unchanged.
+It runs natively on Windows and Linux.
+
+## The Benilla for OctoWoW family
+
+| Project | What it does |
+|---|---|
+| [Benilla-OctoWoW](https://github.com/zmarotrix/Benilla-OctoWoW) | The game client, for Windows and Linux, with every OctoWoW client mod built in |
+| [Benilla-OctoWoW-Updater](https://github.com/zmarotrix/Benilla-OctoWoW-Updater) | Downloads the OctoWoW game files and keeps them current, then starts the game |
+| [Benilla-OctoWoW-Transfer](https://github.com/zmarotrix/Benilla-OctoWoW-Transfer) | Moves your settings, key bindings, macros and addons between a normal 1.12 client and Benilla, or between two Benilla installs |
+
+## Play
+
+1. Download the archive for your system from the
+   [latest release](https://github.com/zmarotrix/Benilla-OctoWoW/releases/latest) and unpack it
+   into an empty folder.
+2. Put [the updater](https://github.com/zmarotrix/Benilla-OctoWoW-Updater) in the same folder
+   and run it. It downloads the OctoWoW game files, or copies them from an OctoWoW install you
+   already have, and starts the game.
+3. To bring over your settings and addons from your normal client, use
+   [the transfer tool](https://github.com/zmarotrix/Benilla-OctoWoW-Transfer).
+
+New Benilla versions come from this repository's releases; the updater only looks after the
+OctoWoW game files.
+
+## What this fork adds
+
+- [docs/octowow/MOD_COVERAGE.md](docs/octowow/MOD_COVERAGE.md): every OctoWoW client mod and
+  what of it is built in, plus Benilla's own performance options (player draw distance,
+  half-size textures, frame-rate caps, field of view, a 100 yd camera).
+- [docs/octowow/LINUX.md](docs/octowow/LINUX.md): playing and building on Linux.
+- [docs/octowow/PRIVATE_SERVER.md](docs/octowow/PRIVATE_SERVER.md): running Benilla against
+  your own local server, including server-side content streaming.
+- [docs/octowow/MPQ_ANALYSIS.md](docs/octowow/MPQ_ANALYSIS.md): the OctoWoW patch archives and
+  their duplicated data.
+
+Like upstream, it does not answer Warden and ships no Blizzard content: you provide the game
+files, which come from OctoWoW's own servers.
+
+---
+
 <div align="center">
   <h1>benilla</h1>
   <p><b>A complete World of Warcraft 1.12.1 client, written from scratch in Rust and <a href="https://bevy.org">Bevy</a></b></p>

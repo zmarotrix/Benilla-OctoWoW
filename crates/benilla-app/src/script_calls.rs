@@ -294,6 +294,35 @@ impl ScriptCallHost<'_, '_> {
         script.hosted(self, |_| ());
     }
 
+    /// The spell queue's send of a held press ([`crate::spell::queue`]) outside any call, as an
+    /// engine turn: the press path `CastSpell` takes, at the selection, the caster with
+    /// `on_self`, or `unit`.
+    pub(crate) fn engine_cast_spell(
+        &mut self,
+        script: &mut UiScript,
+        spell_id: u32,
+        on_self: bool,
+        unit: Option<u64>,
+    ) {
+        #[cfg(test)]
+        self.census_probe();
+        script.host_out(|script| {
+            let mut at = Signalled {
+                selected: self.appliers.select().selected(),
+                latched: self.appliers.pet().attack_latched(),
+                mark: self.appliers.reports().mark(),
+            };
+            let outer_park = self.appliers.cast().ladder.arm_park(true);
+            crate::ui_spellbook::cast_spell(&mut self.appliers.cast(), spell_id, on_self, unit);
+            self.run_casts(script, &mut at);
+            self.appliers.cast().ladder.arm_park(outer_park);
+            self.commit_views(script);
+            #[cfg(test)]
+            self.census_done();
+        });
+        script.hosted(self, |_| ());
+    }
+
     /// What an engine turn's use opened locally outside any call (an interaction's or an
     /// arrival's mailbox, `0x5f6820`, or text object, `0x5f58c0`), run in place as the use runs
     /// it ([`Self::open_used`]), its signals' listeners running there with the host lent, behind
@@ -1202,11 +1231,15 @@ impl CallHost for ScriptCallHost<'_, '_> {
             ScriptCall::AttackTarget { may_pick, .. } => self.attack(script, &mut at, may_pick),
             ScriptCall::SpellTargetUnit(token) => appliers.cursor().spell_target_unit(&token),
             ScriptCall::SpellStopTargeting => appliers.cursor().stop_targeting(),
+            ScriptCall::SpellTargetCursor => appliers.cursor().bind_at_cursor(),
             ScriptCall::SpellStopCasting => appliers.self_cancel().stop_casting(),
             ScriptCall::CastSpell {
-                spell_id, on_self, ..
+                spell_id,
+                on_self,
+                unit,
+                ..
             } => {
-                crate::ui_spellbook::cast_spell(&mut appliers.cast(), spell_id, on_self);
+                crate::ui_spellbook::cast_spell(&mut appliers.cast(), spell_id, on_self, unit);
             }
             ScriptCall::CastShapeshiftForm { spell_id, .. } => {
                 crate::ui_shapeshift::cast_form(&mut appliers.cast(), spell_id);
@@ -1299,6 +1332,7 @@ impl CallHost for ScriptCallHost<'_, '_> {
             }
             ScriptCall::Uninvite(name) => appliers.chat().uninvite(name),
             ScriptCall::Logging { combat } => appliers.chat().logging(script, combat),
+            ScriptCall::CombatLogAdd { text, raw } => appliers.chat().combat_log_add(&text, raw),
             ScriptCall::RequestTimePlayed => appliers.chat().request_time_played(),
             ScriptCall::OpeningCinematic => appliers.chat().opening_cinematic(),
             ScriptCall::AddonMessage(send) => appliers.chat().addon_message(send),
@@ -1459,7 +1493,7 @@ impl CallHost for ScriptCallHost<'_, '_> {
                 appliers.cvars().write(script, &writes);
             }
             ScriptCall::RestartGx => appliers.gx_restart().restart(script, 1),
-            ScriptCall::DressUp(intent) => appliers.dressup().apply(script, intent),
+            ScriptCall::DressUp(pane, intent) => appliers.dressup().apply(script, pane, intent),
             ScriptCall::RecordAsk(benilla_ui::script::RecordAsk::AuctionName { guid, list }) => {
                 appliers.auction().wait_for_name(guid, list);
             }
@@ -1845,6 +1879,24 @@ impl<P: SystemParam + 'static> VmWith<'_, '_, P> {
 }
 
 impl<'w, 's, P: SystemParam + 'static> VmWith<'w, 's, P> {
+    /// The spell queue's send with the host ([`ScriptCallHost::engine_cast_spell`]); with no VM
+    /// or no host to lend, `send` casts it on `P`.
+    pub(crate) fn engine_cast_spell(
+        &mut self,
+        spell_id: u32,
+        on_self: bool,
+        unit: Option<u64>,
+        send: impl FnOnce(SystemParamItem<'_, '_, P>),
+    ) {
+        if let Some(script) = self.script.as_deref_mut() {
+            if let Some(host) = self.set.p1().as_mut() {
+                host.engine_cast_spell(script, spell_id, on_self, unit);
+                return;
+            }
+        }
+        send(self.set.p0());
+    }
+
     /// The VM and the set apart, for a drain that lends the host to each item's Lua in turn
     /// ([`lent`]) and reads or writes `P` between them, never while the host is lent.
     pub(crate) fn parts(

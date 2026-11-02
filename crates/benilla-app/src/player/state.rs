@@ -618,6 +618,12 @@ impl Player {
         self.mover_pitch
     }
 
+    /// What the client mods' state reads see: rooted, swimming, and the horizontal speed in
+    /// yards a second.
+    pub(crate) fn motion_state(&self) -> (bool, bool, f32) {
+        (self.modes.rooted, self.swimming, self.horiz_vel.length())
+    }
+
     /// The facing (Bevy yaw) sent as orientation, not the rendered `model_yaw`; the 3D-audio
     /// listener faces it, not the camera (`0x483430`).
     pub(crate) fn facing(&self) -> f32 {

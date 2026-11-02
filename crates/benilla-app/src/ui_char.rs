@@ -42,6 +42,7 @@ impl Plugin for UiCharPlugin {
             load_skill_tiers.after(benilla_assets::AssetSet::Open),
         )
         .add_systems(Update, feed_skill_tiers.in_set(UiFeed));
+        crate::live_data::loader(app, load_skill_tiers);
     }
 }
 

@@ -10,10 +10,11 @@ mod movement;
 
 pub use fields::field;
 pub use fields::{
-    power_display_scale, quest_slot_state, CorpseLook, ObjectFields, OwnerFallback,
-    PlayerSkillSlot, QuestLogSlot, UnitAuraSlot, AURA_FLAG_CANCELABLE, AURA_FLAG_EFF_INDEX_MASK,
-    FIELD_PLAYER_SKILL_INFO_1_1, PLAYER_EXPLORED_ZONES_SLOTS, PLAYER_QUEST_LOG_SLOTS,
-    PLAYER_SKILL_SLOTS, UNIT_AURA_POSITIVE_SLOTS, UNIT_AURA_SLOTS,
+    power_display_scale, quest_log_slot_field, quest_slot_state, CorpseLook, ObjectFields,
+    OwnerFallback, PlayerSkillSlot, QuestLogSlot, UnitAuraSlot, AURA_FLAG_CANCELABLE,
+    AURA_FLAG_EFF_INDEX_MASK, FIELD_PLAYER_QUEST_LOG_EXTRA_1_1, FIELD_PLAYER_SKILL_INFO_1_1,
+    PLAYER_EXPLORED_ZONES_SLOTS, PLAYER_QUEST_LOG_EXTRA_SLOTS, PLAYER_QUEST_LOG_SLOTS,
+    PLAYER_QUEST_LOG_STOCK_SLOTS, PLAYER_SKILL_SLOTS, UNIT_AURA_POSITIVE_SLOTS, UNIT_AURA_SLOTS,
 };
 pub use movement::{CreateSpline, MovementBlock, MoverState, ObjectType};
 
@@ -129,6 +130,34 @@ mod tests {
         assert_eq!(f.player_quest_log(1), None);
         assert_eq!(f.player_quest_log(3), None);
         assert_eq!(f.player_quest_log(PLAYER_QUEST_LOG_SLOTS), None);
+    }
+
+    #[test]
+    fn extra_slots_read_from_the_combat_rating_block() {
+        // Slot 19 is the last stock one (255-257); the first extra slot jumps to 1262
+        // (`UNIT_END + 0x432`), and the slots past it follow 3 dwords apart.
+        let stock = PLAYER_QUEST_LOG_STOCK_SLOTS;
+        let last = PLAYER_QUEST_LOG_SLOTS - 1;
+        assert_eq!(quest_log_slot_field(stock - 1), Some(255));
+        assert_eq!(
+            quest_log_slot_field(stock),
+            Some(FIELD_PLAYER_QUEST_LOG_EXTRA_1_1)
+        );
+        let last_field = FIELD_PLAYER_QUEST_LOG_EXTRA_1_1 + 3 * u16::from(last - stock);
+        assert_eq!(quest_log_slot_field(last), Some(last_field));
+        assert_eq!(quest_log_slot_field(PLAYER_QUEST_LOG_SLOTS), None);
+        let f = ObjectFields::from_pairs(&[(last_field, 9001), (last_field + 1, 3)]);
+        assert_eq!(f.player_quest_log(last).map(|s| s.quest_id), Some(9001));
+        assert_eq!(f.player_quest_log(last).map(|s| s.counters[0]), Some(3));
+        assert_eq!(f.player_quest_log_window()[usize::from(last)], [9001, 3, 0]);
+    }
+
+    /// OctoWoW's client: 5 extra slots, 25 in all, ending at field 1276, the 15 dwords its
+    /// `.octoql` hook `0xd26145` compares.
+    #[test]
+    fn the_octowow_log_is_25_slots_ending_at_1276() {
+        assert_eq!(PLAYER_QUEST_LOG_SLOTS, 25);
+        assert_eq!(quest_log_slot_field(24).map(|f| f + 2), Some(1276));
     }
 
     #[test]

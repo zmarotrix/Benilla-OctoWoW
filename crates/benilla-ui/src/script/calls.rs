@@ -72,6 +72,10 @@ pub enum ScriptCall {
     SpellTargetUnit(String),
     /// `SpellStopTargeting()` (`0x6e6e30`), made while the cursor was up.
     SpellStopTargeting,
+    /// The client mods' `C_Spell.CastAtCursor` leg, made while the cursor was up: the waiting
+    /// ground spell bound to the world point under the mouse, as a terrain click binds it.
+    /// Deviation: 1.12 places a ground spell only by a click.
+    SpellTargetCursor,
     /// `SpellStopCasting()` (`0x6e6e80`), made with something to stop.
     SpellStopCasting,
     /// `CastSpell(id, "spell", onSelf)` and `CastSpellByName(name, onSelf)` on a player-book name,
@@ -80,6 +84,10 @@ pub enum ScriptCall {
     CastSpell {
         spell_id: u32,
         on_self: bool,
+        /// SuperWoW's unit argument to `CastSpellByName`: the guid the cast binds in the
+        /// selection's place, as an explicit-guid cast does (`0x6e5a90`); `None` for the stock
+        /// forms.
+        unit: Option<u64>,
         /// The gate's tag 2 allowed the cast (`0x6e4bc1`). The book leg's cancels (an active aura
         /// `0x4b3466`, a form `0x4b35da`) come before it, so a refusal stops only the cast.
         may_cast: bool,
@@ -139,6 +147,9 @@ pub enum ScriptCall {
         /// `LoggingCombat`, else `LoggingChat`.
         combat: bool,
     },
+    /// SuperWoW's `CombatLogAdd(text [, raw])`: one line into `WoWCombatLog.txt`, or with `raw`
+    /// into `WoWRawCombatLog.txt`.
+    CombatLogAdd { text: String, raw: bool },
     /// `SendAddonMessage(prefix, message, type)` (`0x49f920`) past its checks: the send at
     /// `0x49faff`.
     AddonMessage(super::AddonSend),
@@ -290,9 +301,10 @@ pub enum ScriptCall {
     /// (`0x639ec0`) and runs their callbacks before the verb goes on.
     RestartGx,
     /// A dressing-room verb ([`super::DressUpIntent`]): `Dress`, `Undress`, `TryOn`, or `SetUnit`
-    /// and `RefreshUnit` on a `DressUpModel`, applied to the room inside the call; a cached
-    /// record's try-on goes on, or refuses with `ERR_NOT_EQUIPPABLE`, there (`0x504540`).
-    DressUp(super::DressUpIntent),
+    /// and `RefreshUnit` on a `DressUpModel`, applied to that pane's room inside the call, as
+    /// each widget edits its own clone (`0x5059a0`); a cached record's try-on goes on, or refuses
+    /// with `ERR_NOT_EQUIPPABLE`, there (`0x504540`).
+    DressUp(crate::widget::FrameHandle, super::DressUpIntent),
     /// `FollowUnit` or `FollowByName` ([`super::FollowRequest`]): the start gate, its refusal's
     /// line or the follow armed and `AUTOFOLLOW_BEGIN` signalled, inside the call (`0x60fed0`).
     Follow(super::FollowRequest),

@@ -245,12 +245,17 @@ pub fn check_refresh(value: &str, _applied: &str, _rows: CvarRows<'_>) -> CvarVe
 /// (`0x688d57`, `0x688d67`). Neither bound clamps.
 pub fn check_farclip(value: &str, _applied: &str, _rows: CvarRows<'_>) -> CvarVerdict {
     let v = s_str_to_float(value);
-    if v < 177.0 || v as f32 > 777.0 {
-        CvarVerdict::refuse("FarClip must be in range 177.0 - 777.0.")
+    // Deviation: the top is [`FARCLIP_MAX`], twice the reference's 777, benilla's extended view
+    // distance.
+    if v < 177.0 || v as f32 > FARCLIP_MAX {
+        CvarVerdict::refuse("FarClip must be in range 177.0 - 1554.0.")
     } else {
         CvarVerdict::accept()
     }
 }
+
+/// The top of `farclip`'s range, benilla's extended view distance (the world's `FARCLIP_RANGE`).
+pub const FARCLIP_MAX: f32 = 1554.0;
 
 /// `frillDensity`'s callback (`0x688de0`): `SStrToInt` (`0x64ac60`) compared unsigned to 1 and
 /// 256 (`0x688dec`-`0x688df6`), so a negative is refused too, with "Frill Density must be in
@@ -584,7 +589,8 @@ pub fn check_camera_decay(value: &str, _applied: &str, _rows: CvarRows<'_>) -> C
 
 /// `0x50b310`, `cameraDistanceMax`: `[0x8089a8]` 0 to `[0x8089a4]` 50.
 pub fn check_camera_distance_max(value: &str, _applied: &str, _rows: CvarRows<'_>) -> CvarVerdict {
-    camera_range(value, 0.0, 50.0)
+    // Deviation: up to 100, Vanilla Tweaks' camera distance; the reference holds to 50.
+    camera_range(value, 0.0, 100.0)
 }
 
 /// `0x50c060`, `cameraSmoothStyle` and `cameraSmoothTrackingStyle`: 0 to 3.
@@ -729,8 +735,8 @@ mod tests {
             (
                 check_camera_distance_max,
                 "0",
-                "50",
-                "Value out of range (0.000000 - 50.000000)",
+                "100",
+                "Value out of range (0.000000 - 100.000000)",
             ),
             (
                 check_camera_smooth_style,
@@ -814,17 +820,17 @@ mod tests {
 
     #[test]
     fn farclip_and_frill_density_refuse_without_clamping() {
-        for ok in ["177", "350", "777", "777.00001", "abc177"] {
+        for ok in ["177", "350", "777", "1000", "1554", "abc177"] {
             let v = check_farclip(ok, "350", &no_rows);
             assert_eq!(v.accept, ok != "abc177", "{ok}");
         }
         // `SStrToFloat`'s 0 * inf is NaN, which neither of the callback's compares refuses.
         assert!(s_str_to_float("0e5000").is_nan());
         assert!(check_farclip("0e5000", "350", &no_rows).accept);
-        for bad in ["176.9", "1000", "-5", "0"] {
+        for bad in ["176.9", "1554.1", "-5", "0"] {
             assert_eq!(
                 check_farclip(bad, "350", &no_rows),
-                CvarVerdict::refuse("FarClip must be in range 177.0 - 777.0."),
+                CvarVerdict::refuse("FarClip must be in range 177.0 - 1554.0."),
                 "{bad}"
             );
         }

@@ -302,6 +302,45 @@ impl Plugin for WdbPlugin {
     }
 }
 
+/// The login screen's Clear cache ([`crate::launcher`]): every saved store's records go, in memory
+/// and on disk, so each is asked of the server again as it is met; a store's realm and path stay,
+/// so the next answer writes a fresh file.
+pub(crate) fn clear_saved(world: &mut World) {
+    fn one<T: SavedCache>(world: &mut World) {
+        if let Some(mut cache) = world.get_resource_mut::<T>() {
+            cache.forget();
+        }
+        let generation = world.get_resource::<T>().map(|c| c.store().generation());
+        if let Some(mut file) = world.get_resource_mut::<WdbFile<T>>() {
+            file.bodies.clear();
+            file.dirty = false;
+            file.saved = generation.unwrap_or(file.saved);
+        }
+    }
+    one::<NameCache>(world);
+    one::<GameObjectTemplates>(world);
+    one::<ItemNames>(world);
+    one::<Items>(world);
+    one::<GossipState>(world);
+    one::<QuestLog>(world);
+    one::<PageTexts>(world);
+    one::<MailOpen>(world);
+    if let Some(dir) = crate::local_state::home().map(|h| h.join("cache")) {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let gone = if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            if let Err(e) = gone {
+                warn!("wdb: cannot clear {}: {e}", path.display());
+            }
+        }
+        info!("wdb: template caches cleared");
+    }
+}
+
 /// A saved store's load and debounced write, ahead of `Update`'s readers, and its exit write.
 fn saved<T: SavedCache>(app: &mut App) {
     app.init_resource::<T>()

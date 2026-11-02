@@ -31,5 +31,6 @@ pub(crate) struct AreaPoiPlugin;
 impl Plugin for AreaPoiPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, load_area_poi.after(AssetSet::Open));
+        crate::live_data::loader(app, load_area_poi);
     }
 }

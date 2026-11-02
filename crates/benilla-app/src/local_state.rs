@@ -297,6 +297,50 @@ pub(crate) fn layout_character_path(realm: &str, character: &str) -> Option<Path
     character_path(CharacterFile::Layout, realm, character)
 }
 
+/// `benilla-config/AddOns/`: the AddOns root, the reference's `Interface\AddOns\`.
+pub(crate) fn addons_root() -> Option<PathBuf> {
+    home().map(|h| h.join("AddOns"))
+}
+
+/// `benilla-config/realm-names.txt`: `<token>\t<realm>` per line, each realm's name as a normal
+/// client's `WTF` folder spells it, which a per-character key (`N_Zoth` for `N'Zoth`) does not
+/// keep; written by an import, read by an export ([`crate::transfer`]).
+pub(crate) fn realm_names_path() -> Option<PathBuf> {
+    home().map(|h| h.join("realm-names.txt"))
+}
+
+/// Every character with any per-character state, as `(realm token, character)`, sorted: the keys
+/// [`character_path`] makes, read back from the folders. A key splits at its first `-`, which no
+/// token holds ([`file_token`]).
+pub(crate) fn character_keys() -> Vec<(String, String)> {
+    let Some(home) = home() else {
+        return Vec::new();
+    };
+    let mut keys = std::collections::BTreeSet::new();
+    for file in CharacterFile::ALL {
+        let (dir, suffix) = file.place();
+        for entry in std::fs::read_dir(home.join(dir))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let is_dir = entry.path().is_dir();
+            let key = if suffix.is_empty() {
+                is_dir.then_some(name.as_str())
+            } else {
+                (!is_dir).then(|| name.strip_suffix(suffix)).flatten()
+            };
+            if let Some((realm, character)) = key.and_then(|k| k.split_once('-')) {
+                if !realm.is_empty() && !character.is_empty() {
+                    keys.insert((realm.to_string(), character.to_string()));
+                }
+            }
+        }
+    }
+    keys.into_iter().collect()
+}
+
 /// The state benilla keeps per character, the analog of the reference's per-character folder
 /// `WTF\Account\<account>\<realm>\<character>\`, each a file or folder named
 /// `<realm>-<character>` in a folder of its kind. Every per-character path goes through
@@ -451,7 +495,7 @@ pub(crate) fn fps_journal_path() -> Option<PathBuf> {
 /// A realm or character name as one path component: anything not a letter or digit becomes `_`.
 /// Letters of any script stay, as in the reference's raw-name folders: vmangos accepts non-Latin
 /// names (`StrictPlayerNames = 0`) and a character name is letters only, so no two share a file.
-fn file_token(s: &str) -> String {
+pub(crate) fn file_token(s: &str) -> String {
     let t: String = s
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '_' })

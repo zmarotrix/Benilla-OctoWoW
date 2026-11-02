@@ -1129,6 +1129,27 @@ pub(super) fn write_combat_line(
         return;
     };
     route(script, windows, &ChatEvent::text_only(line.kind, text));
+    // Deviation: SuperWoW's raw line, the same template with guids in the name slots, signalled
+    // `RAW_COMBATLOG(event, text)` and teed into the raw log.
+    let mut raw = line.fills.clone();
+    for (guid, slot) in [
+        (line.subject, &mut raw.attacker),
+        (line.object, &mut raw.victim),
+    ] {
+        if guid != 0 {
+            *slot = benilla_ui::script::guid_text(guid);
+        }
+    }
+    if let Some(raw) = super::combat::compose_line(script, line.family, line.variant, &raw) {
+        windows.logs.record_raw(&raw);
+        script.fire_event(
+            "RAW_COMBATLOG",
+            vec![
+                benilla_ui::script::ScriptValue::Str(super::event::event_name(line.kind).into()),
+                benilla_ui::script::ScriptValue::Str(raw),
+            ],
+        );
+    }
     if let Some(word) = &line.word {
         crate::ui_unit::fire_combat_text(
             script,

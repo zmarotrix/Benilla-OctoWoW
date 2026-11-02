@@ -41,6 +41,12 @@ pub trait UnitTokenGlobals {
     /// `raidpetN`'s guid while its member's object is not held: the roster record's (`0x4919ae`),
     /// client state the stats packet writes.
     fn raid_pet_record(&self, row: u32) -> u64;
+    /// The unit carrying raid mark `mark` (1 star .. 8 skull), 0 for none: SuperWoW's `markN`
+    /// token, off the raid-target board `MSG_RAID_TARGET_UPDATE` writes.
+    fn raid_mark(&self, mark: u8) -> u64 {
+        let _ = mark;
+        0
+    }
 }
 
 /// What `0x515970` reads off the objects the engine holds, each read on its own: through the lent
@@ -95,6 +101,8 @@ pub fn resolve_unit_in(
             objects.target_of(guid)?;
             guid
         }
+        UnitBase::Guid(guid) => guid,
+        UnitBase::Mark(mark) => globals.raid_mark(mark),
     };
     follow(objects, guid, hops)
 }
@@ -425,7 +433,7 @@ impl UnitTokenGlobals for LiveGlobals<'_> {
     /// The VM's own global: only the publisher writes it, at the pick (`0x492890`), and a token
     /// tests it against the objects as it resolves (`0x515bd2`, `0x515e14`).
     fn mouseover(&self) -> u64 {
-        self.guids.mouseover
+        self.guids.mouseover()
     }
     fn npc(&self) -> u64 {
         self.selection.map_or(self.guids.npc, |s| s.npc)
@@ -462,6 +470,9 @@ impl UnitTokenGlobals for LiveGlobals<'_> {
                 .map_or_else(|| self.guids.raid_pet_record(row), |r| r.pet_record),
         }
     }
+    fn raid_mark(&self, mark: u8) -> u64 {
+        self.guids.raid_mark(mark)
+    }
 }
 
 /// No object: a base that reads none and has no hop asks nothing of the objects.
@@ -479,9 +490,33 @@ impl UnitTokenObjects for NoObjects {
     }
 }
 
+/// SuperWoW's `owner` suffix (`targetowner`, `mouseoverowner`, `0x…owner`): the token it follows,
+/// whose unit's owner it names. Deviation: 1.12 raises on it.
+pub fn owner_of_token(token: &str) -> Option<&str> {
+    let cut = token.len().checked_sub(5)?;
+    (cut > 0 && token.is_char_boundary(cut) && token[cut..].eq_ignore_ascii_case("owner"))
+        .then(|| &token[..cut])
+}
+
+/// The owner of the unit `guid` off its fields: who charmed it, else summoned it, else created
+/// it (`UNIT_FIELD_CHARMEDBY`, `SUMMONEDBY`, `CREATEDBY`); `None` for none or a unit not held.
+pub fn owner_in_fields(field: impl Fn(usize) -> u32) -> Option<u64> {
+    [10usize, 12, 14]
+        .into_iter()
+        .map(|i| u64::from(field(i)) | (u64::from(field(i + 1)) << 32))
+        .find(|&g| g != 0)
+}
+
 /// [`resolve_parsed`] on `token`'s text: `Err` for a token none of the nine compares match, where
 /// the reference raises (`0x515c14`), and nobody for an empty one (`0x51599d`).
 pub(crate) fn resolve_token(lua: &Lua, guids: &UnitGuids, token: &str) -> Result<Option<u64>, ()> {
+    if let Some(of) = owner_of_token(token) {
+        let Some(unit) = resolve_token(lua, guids, of)? else {
+            return Ok(None);
+        };
+        let fields = crate::script::live::ask(lua, &crate::script::UnitFieldsQuery(unit)).flatten();
+        return Ok(fields.and_then(|w| owner_in_fields(|i| w.get(i).copied().unwrap_or(0))));
+    }
     match parse_unit_token(token) {
         UnitTokenParse::Unknown => Err(()),
         UnitTokenParse::Nobody => Ok(None),
@@ -523,6 +558,12 @@ pub struct UnitGuids {
     pub raid: Vec<u64>,
     /// `raidpetN`'s guid, row for row with [`Self::raid`] (`0x491960`).
     pub raid_pets: Vec<u64>,
+    /// The raid-target board, mark 1 (star) to 8 (skull) at index 0 to 7, 0 for an unmarked
+    /// icon: what SuperWoW's `markN` tokens name.
+    pub raid_marks: [u64; 8],
+    /// SuperWoW's `SetMouseoverUnit` override, 0 for none: while set, `mouseover` names it in the
+    /// world pick's place. The VM's own state: a pushed snapshot keeps it.
+    pub script_mouseover: u64,
     /// Each held unit a token can reach, to its `UNIT_FIELD_TARGET` (0 for none): the object
     /// manager's lookup with the unit typemask (`0x468460`, `ecx = 8`) and the descriptor read a
     /// `target` hop makes (`0x515a0f`-`0x515a25`). A guid missing here is not held.
@@ -571,6 +612,11 @@ pub enum UnitBase {
     PartyPet(u32),
     Raid(u32),
     RaidPet(u32),
+    /// SuperWoW: a unit named by its guid, written `0x` and up to 16 hex digits (`UnitExists`'s
+    /// second return, a nameplate's `GetName(1)`).
+    Guid(u64),
+    /// SuperWoW: `markN`, the unit carrying raid mark N (1 star .. 8 skull).
+    Mark(u8),
 }
 
 /// What `0x515970` makes of a token's text, before it reads any state.
@@ -602,7 +648,34 @@ fn base_of(token: &[u8]) -> Option<(Base, usize)> {
 /// Whether the resolver recognises the token, not whether it names a unit: `"party5"` solo is
 /// recognised and answers nil, and only a token none of its nine compares match raises.
 pub(crate) fn token_recognised(token: &str) -> bool {
-    token.eq_ignore_ascii_case("npc") || base_of(token.as_bytes()).is_some()
+    if let Some(of) = owner_of_token(token) {
+        return token_recognised(of);
+    }
+    token.eq_ignore_ascii_case("npc")
+        || base_of(token.as_bytes()).is_some()
+        || superwow_base(token.as_bytes()).is_some()
+}
+
+/// SuperWoW's token bases, tried after the stock nine fail: a guid (`0x` and 1 to 16 hex
+/// digits) or `mark1`..`mark8`, with the length of the text they take.
+fn superwow_base(token: &[u8]) -> Option<(UnitBase, usize)> {
+    if has_prefix(token, "0x") {
+        let digits = token[2..]
+            .iter()
+            .take(16)
+            .take_while(|b| b.is_ascii_hexdigit())
+            .count();
+        let text = std::str::from_utf8(&token[2..2 + digits]).ok()?;
+        let guid = u64::from_str_radix(text, 16).ok()?;
+        return Some((UnitBase::Guid(guid), 2 + digits));
+    }
+    if has_prefix(token, "mark") {
+        let mark = *token.get(4)?;
+        if (b'1'..=b'8').contains(&mark) {
+            return Some((UnitBase::Mark(mark - b'0'), 5));
+        }
+    }
+    None
 }
 
 /// The inline base-10 parse after `party`, `partypet`, `raid` and `raidpet`, then `dec` to a
@@ -626,14 +699,18 @@ pub fn parse_unit_token(token: &str) -> UnitTokenParse {
         return UnitTokenParse::Nobody;
     }
     let Some((base, len)) = base_of(bytes) else {
-        return if token.eq_ignore_ascii_case("npc") {
-            UnitTokenParse::Unit {
+        if token.eq_ignore_ascii_case("npc") {
+            return UnitTokenParse::Unit {
                 base: UnitBase::Npc,
                 hops: 0,
-            }
-        } else {
-            UnitTokenParse::Unknown
+            };
+        }
+        // Deviation: SuperWoW's guid and `markN` tokens, which OctoWoW's client mods add; stock
+        // 1.12 raises on them.
+        let Some((base, len)) = superwow_base(bytes) else {
+            return UnitTokenParse::Unknown;
         };
+        return hops_after(base, &bytes[len..]);
     };
     let mut rest = &bytes[len..];
     let mut numbered = |make: fn(u32) -> UnitBase| {
@@ -651,6 +728,11 @@ pub fn parse_unit_token(token: &str) -> UnitTokenParse {
         Base::RaidPet => numbered(UnitBase::RaidPet),
         Base::Raid => numbered(UnitBase::Raid),
     };
+    hops_after(base, rest)
+}
+
+/// The `target` hops after a base, to the end of the text; any other text names nobody.
+fn hops_after(base: UnitBase, mut rest: &[u8]) -> UnitTokenParse {
     let mut hops = 0;
     while !rest.is_empty() {
         if !has_prefix(rest, "target") {
@@ -743,7 +825,10 @@ impl UnitTokenGlobals for UnitGuids {
         self.target
     }
     fn mouseover(&self) -> u64 {
-        self.mouseover
+        match self.script_mouseover {
+            0 => self.mouseover,
+            set => set,
+        }
     }
     fn npc(&self) -> u64 {
         self.npc
@@ -761,6 +846,12 @@ impl UnitTokenGlobals for UnitGuids {
     /// The row's pet as pushed: the record's while the member was out of view at the push.
     fn raid_pet_record(&self, row: u32) -> u64 {
         row_of(&self.raid_pets, row)
+    }
+    fn raid_mark(&self, mark: u8) -> u64 {
+        mark.checked_sub(1)
+            .and_then(|i| self.raid_marks.get(usize::from(i)))
+            .copied()
+            .unwrap_or(0)
     }
 }
 
@@ -804,6 +895,9 @@ mod tests {
             party_pets: [P1_PET, 0, 0, 0],
             raid: vec![P1, R3, ME],
             raid_pets: vec![P1_PET, 0, PET],
+            // Skull (8) on the mob, star (1) on party1.
+            raid_marks: [P1, 0, 0, 0, 0, 0, 0, MOB],
+            script_mouseover: 0,
             held: HashMap::from([
                 (ME, MOB),
                 (PET, 0),
@@ -837,6 +931,40 @@ mod tests {
         fn target_of(&self, guid: u64) -> Option<u64> {
             self.targets.get(&guid).copied()
         }
+    }
+
+    /// SuperWoW's tokens: a guid in any case, at most 16 hex digits, and `mark1`..`mark8`, each
+    /// taking `target` hops as the stock bases do; anything else after them names nobody, and a
+    /// `mark` outside 1..8 is not a token at all.
+    #[test]
+    fn superwow_guid_and_mark_tokens_resolve() {
+        let g = guids();
+        assert_eq!(g.guid_of("0xF130000000000001"), Some(MOB));
+        assert_eq!(g.guid_of("0xf130000000000001"), Some(MOB));
+        assert_eq!(g.guid_of("0x21"), Some(P1));
+        assert_eq!(
+            g.guid_of("0xF130000000000001target"),
+            Some(P1),
+            "the mob targets party1"
+        );
+        assert_eq!(g.guid_of("0x21junk"), None);
+        assert_eq!(g.guid_of("mark8"), Some(MOB));
+        assert_eq!(g.guid_of("MARK1"), Some(P1));
+        assert_eq!(g.guid_of("mark8target"), Some(P1));
+        assert_eq!(g.guid_of("mark2"), None, "an unused mark names nobody");
+        assert_eq!(g.resolve("mark9"), Err(()));
+        assert_eq!(g.resolve("mark"), Err(()));
+        assert!(token_recognised("mark3") && token_recognised("0x1"));
+        // SuperWoW's owner suffix rides any token the resolver knows.
+        assert!(token_recognised("targetowner") && token_recognised("mouseoverOwner"));
+        assert!(!token_recognised("owner") && !token_recognised("bogusowner"));
+        assert_eq!(owner_of_token("partypet2owner"), Some("partypet2"));
+        assert_eq!(
+            owner_in_fields(|i| if i == 12 { 7 } else { 0 }),
+            Some(7),
+            "the summoner"
+        );
+        assert!(!token_recognised("mark0"));
     }
 
     /// Each part of the resolver that reads an object reads it off the objects, not the snapshot:

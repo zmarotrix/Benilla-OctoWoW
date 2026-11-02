@@ -697,6 +697,8 @@ pub(crate) struct ScriptCursor<'w, 's> {
     /// The item a confirm popup stands over, and the enchant rows the item gate reads.
     parked: ResMut<'w, EnchantConfirmItem>,
     enchants: Option<Res<'w, crate::items::Enchants>>,
+    /// The world point under the mouse, which a cursor placement binds.
+    under_mouse: Option<Res<'w, crate::target::PickOcclusion>>,
 }
 
 impl ScriptCursor<'_, '_> {
@@ -748,6 +750,24 @@ impl ScriptCursor<'_, '_> {
         };
         debug!(
             "ui_action: minimap ground cast {spell_id} at wow ({:.2}, {:.2}, {:.2}) as {bound:?}",
+            at[0], at[1], at[2]
+        );
+        self.ladder.commit_targeted(spell_id, commit, bound);
+    }
+
+    /// The client mods' cursor placement ([`benilla_ui::script::ScriptCall::SpellTargetCursor`]):
+    /// the waiting ground spell bound at the world point under the mouse, as the terrain click
+    /// binds it; with the mouse on the sky nothing binds and the cursor stays.
+    pub(crate) fn bind_at_cursor(&mut self) {
+        let Some(point) = self.under_mouse.as_deref().and_then(|o| o.point) else {
+            return;
+        };
+        let at = benilla_assets::coords::bevy_to_wow(point);
+        let Some((spell_id, commit, bound)) = self.ladder.ground.location_commit(at) else {
+            return;
+        };
+        debug!(
+            "ui_action: ground cast {spell_id} placed at the cursor, wow ({:.2}, {:.2}, {:.2})",
             at[0], at[1], at[2]
         );
         self.ladder.commit_targeted(spell_id, commit, bound);

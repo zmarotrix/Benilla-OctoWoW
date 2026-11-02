@@ -275,6 +275,16 @@ pub(crate) struct CastLadder<'w, 's> {
     stop_word: ResMut<'w, crate::creature_anim::AttackStopInFlight>,
     /// What the validator's learn rungs ask the caster and its pet know (`0x60c740`-`0x60c8d0`).
     known: KnownReads<'w>,
+    /// nampower's spell queue, which holds a player's press the ladder would refuse for a cast
+    /// or cooldown about to end ([`super::queue`]).
+    queue: QueueReads<'w>,
+}
+
+/// The spell queue's inputs; absent in a harness without the spell plugin.
+#[derive(SystemParam)]
+pub(crate) struct QueueReads<'w> {
+    queue: Option<Res<'w, super::queue::SpellQueue>>,
+    settings: Option<Res<'w, super::queue::QueueSettings>>,
 }
 
 /// The known spells the validator's learn rungs read: the active player's book (`0xb710fc`), and
@@ -879,12 +889,85 @@ impl CastLadder<'_, '_> {
         ctx: &cast_target::CastContext,
         on_self: bool,
     ) {
+        if self.hold_in_queue(spell_id, ctx, on_self) {
+            return;
+        }
         let held = HeldCast {
             spell_id,
             on_self,
             unit: None,
         };
         self.send_bound(spell_id, ctx, CastCommit::Spell, None, Some(held));
+    }
+
+    /// nampower's queue ([`super::queue`]): a press the ladder would refuse because another
+    /// cast is in flight or its cooldown runs, with that ending inside the window, is held to be
+    /// sent when it may. Any other press drops a held one.
+    fn hold_in_queue(
+        &mut self,
+        spell_id: u32,
+        ctx: &cast_target::CastContext,
+        on_self: bool,
+    ) -> bool {
+        let (Some(queue), Some(settings)) =
+            (self.queue.queue.as_deref(), self.queue.settings.as_deref())
+        else {
+            return false;
+        };
+        if !self.permitted() {
+            return false;
+        }
+        let spells = self.spells.as_deref();
+        let Some(def) = spells.and_then(|s| s.catalog.get(spell_id)) else {
+            return false;
+        };
+        let now = Instant::now();
+        // Another cast in flight: its end, or now for one awaiting its answer. The same spell in
+        // flight is the ladder's silent bail, never held.
+        let busy = match self.pending.current() {
+            Some(current) if current == spell_id => {
+                queue.pressed();
+                return false;
+            }
+            Some(_) => Some(queue.cast_left(now)),
+            None => None,
+        };
+        let cooling = std::time::Duration::from_millis(u64::from(
+            self.cooldowns
+                .info(spell_id, 0, Some(def), now)
+                .remaining_ms,
+        ))
+        .max(
+            self.cooldowns
+                .queue_gcd_left(def.start_recovery_category, now),
+        );
+        let wait = match (busy, cooling.is_zero()) {
+            (None, true) => None,
+            (busy, _) => Some(busy.unwrap_or_default().max(cooling)),
+        };
+        let cast_ms = spells
+            .and_then(|s| s.cast_times.get(def.casting_time_index))
+            .map_or(0, |row| row.base_ms);
+        let kind = if def.tooltip_channeled() {
+            super::queue::SpellKind::Channeled
+        } else if cast_ms > 0 {
+            super::queue::SpellKind::CastTime
+        } else {
+            super::queue::SpellKind::Instant
+        };
+        let press = super::queue::Press {
+            spell_id,
+            on_self,
+            unit: ctx.selection_guid,
+            kind,
+            gcd: def.start_recovery_ms > 0,
+        };
+        if queue.offer(settings, press, wait, now) {
+            debug!("ui_action: cast {spell_id} held in the spell queue ({wait:?})");
+            return true;
+        }
+        queue.pressed();
+        false
     }
 
     /// The press held at the attack pick, if one is.

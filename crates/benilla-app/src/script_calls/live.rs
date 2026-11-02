@@ -86,6 +86,22 @@ live_reads! {
         names: crate::names::NameLive<'static, 'static>,
         /// The Video menus' lists: the display's resolutions and the device's multisample formats.
         display: crate::video::DisplayLive<'static, 'static>,
+        /// nampower's reads: a unit's raw fields, a spell's row, an icon's path.
+        nampower: crate::nampower::NampowerLive<'static, 'static>,
+        /// UnitXP SP3's reads: any unit's body and a line-of-sight test.
+        unitxp: crate::unitxp::UnitXpLive<'static, 'static>,
+        /// The player's own auras on other units, timed.
+        own_auras: crate::own_auras::OwnAuraLive<'static>,
+        /// The totem bar and the school lockout.
+        totems: crate::totems::TotemLive<'static>,
+        /// Other units' casts and health trends.
+        unit_casts: crate::unit_casts::UnitCastLive<'static>,
+        /// The creature immunities our spells learned.
+        immunities: crate::immunities::ImmuneLive<'static>,
+        /// The player's mover and fields, for the mods' state reads.
+        player_state: crate::player_state::PlayerStateLive<'static, 'static>,
+        /// The player's swing clocks and last swings.
+        combat_timers: crate::combat_timers::CombatTimersLive<'static>,
         /// The quest slots, the held counts, the standings, the coinage and the clock the quest
         /// log getters read.
         quest_log: crate::ui_quest_log::QuestLogLive<'static, 'static>,

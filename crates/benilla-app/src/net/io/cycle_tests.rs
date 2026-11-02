@@ -96,6 +96,7 @@ fn an_empty_account_parks_at_select_without_creating_a_character() {
             host: realmd.addr.clone(),
             locale: benilla_protocol::auth::LOCALE_TAG_EN_US,
             generation: 0,
+            extensions: false,
         })
         .unwrap();
     let (realms, failed) = next_list(&events);

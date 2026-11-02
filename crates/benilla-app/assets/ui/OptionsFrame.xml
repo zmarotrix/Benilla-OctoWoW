@@ -440,6 +440,82 @@
             .. "Sounds keep running while they are silenced, so a long one may have finished by "
             .. "the time you return."
 
+        -- benilla's own: SuperWoW's click-through (`crate::target::clicks_through`).
+        BENILLA_TOOLTIP_CLICK_THROUGH =
+            "Dead creatures with nothing left to loot or skin no longer catch your cursor, so "
+            .. "you can click the lootable corpses lying under them."
+
+        -- benilla's own: the visual time of day (`crate::time_of_day`).
+        BENILLA_TOOLTIP_TIME_OF_DAY =
+            "Which time of day the world is drawn at: the sky, sun, moons, fog and light.\n\n"
+            .. "Server follows the realm's clock, as the original client does. Local follows "
+            .. "your computer's clock. Static holds the Static Time below.\n\n"
+            .. "Only what you see changes: the in-game clock and everything else keep the "
+            .. "server's time."
+        BENILLA_TOOLTIP_TIME_OF_DAY_STATIC =
+            "The time of day the world is drawn at when Time of Day is Static."
+        BENILLA_TOOLTIP_PERFORMANCE_PRESET =
+            "Sets every graphics option at once for a kind of computer. Low suits older "
+            .. "laptops and integrated graphics; Ultra uses the extended view and detail "
+            .. "distances. Any option can still be changed afterwards. Texture quality "
+            .. "and filtering take effect the next time the game starts."
+
+        -- The presets: each CVar each sets. Render scale, anti-aliasing, view and detail
+        -- distance, environment detail, grass, weather and spell effects.
+        BENILLA_PERFORMANCE_PRESETS = {
+            low = { renderScale = "0.75", gxMultisample = "1", farclip = "177",
+                    detailDistanceScale = "1", WorldDetail = "0", frillDensity = "16",
+                    weatherDensity = "0", spellEffectLevel = "0", PB_PlayerRenderDist = "50", baseMip = "1", anisotropic = "1" },
+            medium = { renderScale = "1", gxMultisample = "1", farclip = "350",
+                       detailDistanceScale = "1", WorldDetail = "1", frillDensity = "32",
+                       weatherDensity = "1", spellEffectLevel = "1", PB_PlayerRenderDist = "80", baseMip = "0", anisotropic = "4" },
+            high = { renderScale = "1", gxMultisample = "4", farclip = "777",
+                     detailDistanceScale = "1.5", WorldDetail = "2", frillDensity = "64",
+                     weatherDensity = "2", spellEffectLevel = "2", PB_PlayerRenderDist = "-1",
+                     baseMip = "0", anisotropic = "8" },
+            ultra = { renderScale = "1", gxMultisample = "8", farclip = "1554",
+                      detailDistanceScale = "3", WorldDetail = "2", frillDensity = "128",
+                      weatherDensity = "3", spellEffectLevel = "2", PB_PlayerRenderDist = "-1",
+                      baseMip = "0", anisotropic = "16" },
+        }
+        BENILLA_PERFORMANCE_PRESET = "custom"
+
+        -- The chosen preset's CVars written, then every page re-read so the rows show them.
+        function BenillaPerformancePreset_Apply()
+            local preset = BENILLA_PERFORMANCE_PRESETS[BENILLA_PERFORMANCE_PRESET]
+            if not preset then return end
+            for cvar, value in pairs(preset) do
+                SetCVar(cvar, value)
+            end
+            if RestartGx then RestartGx() end
+            if BenillaOptionsPage_Refresh then
+                for key in pairs(BENILLA_OPTIONS_PAGE_ROWS) do
+                    BenillaOptionsPage_Refresh(key)
+                end
+            end
+        end
+
+        BENILLA_TOOLTIP_VIEW_DISTANCE =
+            "How far the detailed world draws, in yards, up to twice the original client's 777. "
+            .. "Farther distances load more terrain and need more memory and graphics power."
+        BENILLA_TOOLTIP_FIELD_OF_VIEW =
+            "How wide the camera sees. 90 is the original client's; wider shows more around "
+            .. "you, as Vanilla Tweaks and SuperWoW allow."
+        BENILLA_TOOLTIP_MAX_FPS =
+            "The most frames a second the game draws while it is the active window. Unlimited "
+            .. "draws as fast as the computer can; a cap keeps a laptop cooler and its battery "
+            .. "longer."
+        BENILLA_TOOLTIP_BACKGROUND_FPS =
+            "The most frames a second while another window is in front, so the game uses little "
+            .. "power in the background. Unlimited keeps it at full speed."
+        BENILLA_TOOLTIP_PLAYER_RENDER_DIST =
+            "Other players farther than this are not drawn (your target always is), which "
+            .. "speeds up crowded cities and raids. Unlimited draws everyone, as the original "
+            .. "client does. More limits are in PerfBoostSettings."
+        BENILLA_TOOLTIP_DETAIL_DISTANCE =
+            "How much farther than the original client small objects (rocks, grass tufts, "
+            .. "props) stay drawn before fading out. 1x is the original distances."
+
         -- 1.12's WINDOWED_MODE text describes a checkbox and exclusive-mode gamma.
         BENILLA_TOOLTIP_DISPLAY_MODE =
             "Windowed (Fullscreen) fills the screen with a borderless window; Windowed runs in "
@@ -460,7 +536,7 @@
             Controls = {
                 "RowStickyTarget", "RowAssistAttack", "RowClearAFK",
                 "RowBlockTrades", "RowAutoSelfCast",
-                "RowAutoLoot", "RowInvertMouse", "RowMouseSpeed", "RowClickToMove",
+                "RowAutoLoot", "RowClickThrough", "RowInvertMouse", "RowMouseSpeed", "RowClickToMove",
                 "RowCameraFollowStyle", "RowFollowTerrain", "RowHeadBob",
                 "RowAutoFollowSpeed", "RowWaterCollision", "RowSmartPivot",
                 "RowMouseLookSpeed", "RowMaxCameraDistance",
@@ -472,7 +548,9 @@
             },
             Graphics = {
                 "RowUiScale", "RowFarclip", "RowWorldDetail", "RowSpellDetail", "RowBrightness",
-                "RowWeatherDensity",
+                "RowWeatherDensity", "RowTimeOfDay", "RowTimeOfDayStatic",
+                "RowPerformancePreset", "RowViewDistance", "RowDetailDistance",
+                "RowFieldOfView", "RowMaxFps", "RowBackgroundFps", "RowPlayerRenderDist",
                 "RowDisplayMode", "RowVerticalSync", "RowRenderScale",
             },
             -- Guild Names and Player Titles are children of Player Names
@@ -622,6 +700,23 @@
             [6] = "RowBrightness", [8] = "RowSpellDetail", [9] = "RowWeatherDensity",
         }
 
+        -- The stock 1.12 bounds of those rows (OptionsFrame.lua:24-34), for an interface that
+        -- replaces the stock options window and drops the table (OctoWoW's categorized one).
+        local farMin, farMax = OPTIONS_FARCLIP_MIN or 177, OPTIONS_FARCLIP_MAX or 777
+        local STOCK_GRAPHICS_SLIDERS = {
+            { minValue = 0.64, maxValue = 1.0, valueStep = 0.01 },
+            { minValue = farMin, maxValue = farMax, valueStep = (farMax - farMin) / 10 },
+            { minValue = 0, maxValue = 2, valueStep = 1 },
+            [6] = { minValue = -0.5, maxValue = 0.5, valueStep = 0.1 },
+            [8] = { minValue = 0, maxValue = 2, valueStep = 1 },
+            [9] = { minValue = 0, maxValue = 3, valueStep = 1 },
+        }
+
+        -- Row `i`'s bounds: the live stock table where it exists, so an addon's write lands.
+        function BenillaOptionsSliderInfo(i)
+            return (OptionsFrameSliders and OptionsFrameSliders[i]) or STOCK_GRAPHICS_SLIDERS[i]
+        end
+
         -- SetMinMaxValues re-clamps and fires OnValueChanged, which must not write back.
         function BenillaOptionsSliderRow_Setup(row, min, max, step, fmt, stops)
             local slider = getglobal(row:GetName() .. "ControlSlider")
@@ -716,6 +811,28 @@
             if row.fmt == "travel" and row.minv and row.maxv and row.maxv > row.minv then
                 return string.format("%d%%",
                     math.floor((value - row.minv) / (row.maxv - row.minv) * 100 + 0.5))
+            end
+            -- "clock": minutes past midnight as a 24-hour time.
+            if row.fmt == "clock" then
+                local m = math.floor(value + 0.5)
+                return string.format("%02d:%02d", math.floor(m / 60), math.mod(m, 60))
+            end
+            -- "mult": a multiplier.
+            if row.fmt == "mult" then
+                return string.format("%.2gx", value)
+            end
+            -- "deg": radians read out as degrees.
+            if row.fmt == "deg" then
+                return string.format("%d", math.floor(value * 180 / 3.14159265 + 0.5))
+            end
+            -- "fps" and "dist": 0 and -1 are no cap.
+            if row.fmt == "fps" then
+                if value < 1 then return "Unlimited" end
+                return string.format("%d fps", math.floor(value + 0.5))
+            end
+            if row.fmt == "dist" then
+                if value < 0 then return "Unlimited" end
+                return string.format("%d yd", math.floor(value + 0.5))
             end
             -- "yards": cameraDistanceMaxFactor over the 15 yd base.
             if row.fmt == "yards" then
@@ -1626,10 +1743,19 @@
                                             <!-- No tip: 1.12 has no AUTO_LOOT string. -->
                                             <Scripts><OnLoad>BenillaOptionsRow_OnLoad(this, "autoLootDefault", "Auto Loot")</OnLoad></Scripts>
                                         </Frame>
-                                        <Frame name="$parentRowInvertMouse" inherits="BenillaOptionsCheckboxRowTemplate">
+                                        <!-- benilla's own: SuperWoW's click-through. -->
+                                        <Frame name="$parentRowClickThrough" inherits="BenillaOptionsCheckboxRowTemplate">
                                             <Anchors>
                                                 <Anchor point="TOPLEFT" relativeTo="$parentRowAutoLoot" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
                                                 <Anchor point="TOPRIGHT" relativeTo="$parentRowAutoLoot" relativePoint="BOTTOMRIGHT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                            </Anchors>
+                                            <Scripts><OnLoad>BenillaOptionsRow_OnLoad(this, "clickThrough", "Click Through Corpses",
+                                                "BENILLA_TOOLTIP_CLICK_THROUGH")</OnLoad></Scripts>
+                                        </Frame>
+                                        <Frame name="$parentRowInvertMouse" inherits="BenillaOptionsCheckboxRowTemplate">
+                                            <Anchors>
+                                                <Anchor point="TOPLEFT" relativeTo="$parentRowClickThrough" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                                <Anchor point="TOPRIGHT" relativeTo="$parentRowClickThrough" relativePoint="BOTTOMRIGHT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
                                             </Anchors>
                                             <Scripts><OnLoad>BenillaOptionsRow_OnLoad(this, "mouseInvertPitch", "Invert Mouse",
                                                 "OPTION_TOOLTIP_INVERT_MOUSE")</OnLoad></Scripts>
@@ -1752,7 +1878,9 @@
                                             <Scripts><OnLoad>
                                                 BenillaOptionsRow_OnLoad(this, "cameraDistanceMaxFactor",
                                                     "Max Camera Distance", "OPTION_TOOLTIP_MAX_FOLLOW_DIST")
-                                                BenillaOptionsSliderRow_Setup(this, 1.0, 2.0, 0.1, "yards")
+                                                -- Deviation: 15 to 100 yd, Vanilla Tweaks' camera
+                                                -- distance; 1.12's slider ends at 30.
+                                                BenillaOptionsSliderRow_Setup(this, 1.0, 6.6667, 0.33333, "yards")
                                             </OnLoad></Scripts>
                                         </Frame>
                                     </Frames>
@@ -1883,9 +2011,9 @@
                                             <Scripts><OnLoad>
                                                 BenillaOptionsRow_OnLoad(this, "uiScale", "UI Scale",
                                                     "OPTION_TOOLTIP_UI_SCALE")
-                                                BenillaOptionsSliderRow_Setup(this, OptionsFrameSliders[1].minValue,
-                                                    OptionsFrameSliders[1].maxValue,
-                                                    OptionsFrameSliders[1].valueStep)
+                                                BenillaOptionsSliderRow_Setup(this, BenillaOptionsSliderInfo(1).minValue,
+                                                    BenillaOptionsSliderInfo(1).maxValue,
+                                                    BenillaOptionsSliderInfo(1).valueStep)
                                                 -- A live write would rescale the slider mid-drag.
                                                 this.deferred = 1
                                             </OnLoad></Scripts>
@@ -1898,9 +2026,9 @@
                                             <Scripts><OnLoad>
                                                 BenillaOptionsRow_OnLoad(this, "farclip", "Terrain Distance",
                                                     "OPTION_TOOLTIP_FARCLIP")
-                                                BenillaOptionsSliderRow_Setup(this, OptionsFrameSliders[2].minValue,
-                                                    OptionsFrameSliders[2].maxValue,
-                                                    OptionsFrameSliders[2].valueStep, "raw")
+                                                BenillaOptionsSliderRow_Setup(this, BenillaOptionsSliderInfo(2).minValue,
+                                                    BenillaOptionsSliderInfo(2).maxValue,
+                                                    BenillaOptionsSliderInfo(2).valueStep, "raw")
                                             </OnLoad></Scripts>
                                         </Frame>
                                         <Frame name="$parentRowWorldDetail" inherits="BenillaOptionsSliderRowTemplate">
@@ -1912,9 +2040,9 @@
                                                 BenillaOptionsRow_OnLoad(this, "WorldDetail", "Environment Detail",
                                                     "OPTION_TOOLTIP_ENVIRONMENT_DETAIL")
                                                 -- Stop names from the era quality ladder.
-                                                BenillaOptionsSliderRow_Setup(this, OptionsFrameSliders[3].minValue,
-                                                    OptionsFrameSliders[3].maxValue,
-                                                    OptionsFrameSliders[3].valueStep, nil,
+                                                BenillaOptionsSliderRow_Setup(this, BenillaOptionsSliderInfo(3).minValue,
+                                                    BenillaOptionsSliderInfo(3).maxValue,
+                                                    BenillaOptionsSliderInfo(3).valueStep, nil,
                                                     { "Low", "Medium", "High" })
                                             </OnLoad></Scripts>
                                         </Frame>
@@ -1930,9 +2058,9 @@
                                                     "OPTION_TOOLTIP_SPELL_DETAIL")
                                                 -- Our names for the handler's emission scalars
                                                 -- 0.33, 0.66 and 1.0 (`0x689510`).
-                                                BenillaOptionsSliderRow_Setup(this, OptionsFrameSliders[8].minValue,
-                                                    OptionsFrameSliders[8].maxValue,
-                                                    OptionsFrameSliders[8].valueStep, nil,
+                                                BenillaOptionsSliderRow_Setup(this, BenillaOptionsSliderInfo(8).minValue,
+                                                    BenillaOptionsSliderInfo(8).maxValue,
+                                                    BenillaOptionsSliderInfo(8).valueStep, nil,
                                                     { "Low", "Medium", "High" })
                                             </OnLoad></Scripts>
                                         </Frame>
@@ -1951,9 +2079,9 @@
                                                 BenillaOptionsNumFuncRow_OnLoad(this, GetGamma, SetGamma,
                                                     tostring(1 - gd), "Brightness",
                                                     "BENILLA_TOOLTIP_BRIGHTNESS")
-                                                BenillaOptionsSliderRow_Setup(this, OptionsFrameSliders[6].minValue,
-                                                    OptionsFrameSliders[6].maxValue,
-                                                    OptionsFrameSliders[6].valueStep, "travel")
+                                                BenillaOptionsSliderRow_Setup(this, BenillaOptionsSliderInfo(6).minValue,
+                                                    BenillaOptionsSliderInfo(6).maxValue,
+                                                    BenillaOptionsSliderInfo(6).valueStep, "travel")
                                             </OnLoad></Scripts>
                                         </Frame>
                                         <!-- On the CVar, as 1.12's lands: there is no
@@ -1968,16 +2096,129 @@
                                                     "OPTION_TOOLTIP_WEATHER_DETAIL")
                                                 -- Our names for `0x67b870`'s spawn-rate gains
                                                 -- `{0.1, 0.33, 0.66, 1.0}` (`[0x8680ec]`).
-                                                BenillaOptionsSliderRow_Setup(this, OptionsFrameSliders[9].minValue,
-                                                    OptionsFrameSliders[9].maxValue,
-                                                    OptionsFrameSliders[9].valueStep, nil,
+                                                BenillaOptionsSliderRow_Setup(this, BenillaOptionsSliderInfo(9).minValue,
+                                                    BenillaOptionsSliderInfo(9).maxValue,
+                                                    BenillaOptionsSliderInfo(9).valueStep, nil,
                                                     { "Minimal", "Low", "Medium", "Full" })
+                                            </OnLoad></Scripts>
+                                        </Frame>
+                                        <!-- benilla's own: the visual time of day. -->
+                                        <Frame name="$parentRowTimeOfDay" inherits="BenillaOptionsDropdownRowTemplate">
+                                            <Anchors>
+                                                <Anchor point="TOPLEFT" relativeTo="$parentRowWeatherDensity" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                                <Anchor point="TOPRIGHT" relativeTo="$parentRowWeatherDensity" relativePoint="BOTTOMRIGHT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                            </Anchors>
+                                            <Scripts><OnLoad>
+                                                BenillaOptionsRow_OnLoad(this, "timeOfDay", "Time of Day",
+                                                    "BENILLA_TOOLTIP_TIME_OF_DAY")
+                                                BenillaOptionsDropdownRow_Setup(this, {
+                                                    { text = "Server", value = "0" },
+                                                    { text = "Local", value = "1" },
+                                                    { text = "Static", value = "2" },
+                                                })
+                                            </OnLoad></Scripts>
+                                        </Frame>
+                                        <Frame name="$parentRowTimeOfDayStatic" inherits="BenillaOptionsSliderRowTemplate">
+                                            <Anchors>
+                                                <Anchor point="TOPLEFT" relativeTo="$parentRowTimeOfDay" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                                <Anchor point="TOPRIGHT" relativeTo="$parentRowTimeOfDay" relativePoint="BOTTOMRIGHT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                            </Anchors>
+                                            <Scripts><OnLoad>
+                                                BenillaOptionsRow_OnLoad(this, "timeOfDayStatic", "Static Time",
+                                                    "BENILLA_TOOLTIP_TIME_OF_DAY_STATIC")
+                                                -- Minutes past midnight, a quarter hour a step.
+                                                BenillaOptionsSliderRow_Setup(this, 0, 1425, 15, "clock")
+                                            </OnLoad></Scripts>
+                                        </Frame>
+                                        <Frame name="$parentRowPerformancePreset" inherits="BenillaOptionsDropdownRowTemplate">
+                                            <Anchors>
+                                                <Anchor point="TOPLEFT" relativeTo="$parentRowTimeOfDayStatic" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                                <Anchor point="TOPRIGHT" relativeTo="$parentRowTimeOfDayStatic" relativePoint="BOTTOMRIGHT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                            </Anchors>
+                                            <Scripts><OnLoad>
+                                                BenillaOptionsGlobalRow_OnLoad(this, "BENILLA_PERFORMANCE_PRESET",
+                                                    "Performance Preset", "BENILLA_TOOLTIP_PERFORMANCE_PRESET")
+                                                this.applyFunc = "BenillaPerformancePreset_Apply"
+                                                BenillaOptionsDropdownRow_Setup(this, {
+                                                    { text = "Custom", value = "custom" },
+                                                    { text = "Low", value = "low" },
+                                                    { text = "Medium", value = "medium" },
+                                                    { text = "High", value = "high" },
+                                                    { text = "Ultra", value = "ultra" },
+                                                })
+                                            </OnLoad></Scripts>
+                                        </Frame>
+                                        <Frame name="$parentRowViewDistance" inherits="BenillaOptionsSliderRowTemplate">
+                                            <Anchors>
+                                                <Anchor point="TOPLEFT" relativeTo="$parentRowPerformancePreset" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                                <Anchor point="TOPRIGHT" relativeTo="$parentRowPerformancePreset" relativePoint="BOTTOMRIGHT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                            </Anchors>
+                                            <Scripts><OnLoad>
+                                                BenillaOptionsRow_OnLoad(this, "farclip", "View Distance",
+                                                    "BENILLA_TOOLTIP_VIEW_DISTANCE")
+                                                -- Deviation: up to 1554 yd, twice 1.12's 777.
+                                                BenillaOptionsSliderRow_Setup(this, 177, 1554, 50, "raw")
+                                            </OnLoad></Scripts>
+                                        </Frame>
+                                        <Frame name="$parentRowDetailDistance" inherits="BenillaOptionsSliderRowTemplate">
+                                            <Anchors>
+                                                <Anchor point="TOPLEFT" relativeTo="$parentRowViewDistance" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                                <Anchor point="TOPRIGHT" relativeTo="$parentRowViewDistance" relativePoint="BOTTOMRIGHT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                            </Anchors>
+                                            <Scripts><OnLoad>
+                                                BenillaOptionsRow_OnLoad(this, "detailDistanceScale", "Detail Distance",
+                                                    "BENILLA_TOOLTIP_DETAIL_DISTANCE")
+                                                BenillaOptionsSliderRow_Setup(this, 1, 4, 0.25, "mult")
+                                            </OnLoad></Scripts>
+                                        </Frame>
+                                        <Frame name="$parentRowFieldOfView" inherits="BenillaOptionsSliderRowTemplate">
+                                            <Anchors>
+                                                <Anchor point="TOPLEFT" relativeTo="$parentRowDetailDistance" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                                <Anchor point="TOPRIGHT" relativeTo="$parentRowDetailDistance" relativePoint="BOTTOMRIGHT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                            </Anchors>
+                                            <Scripts><OnLoad>
+                                                BenillaOptionsRow_OnLoad(this, "FoV", "Field of View",
+                                                    "BENILLA_TOOLTIP_FIELD_OF_VIEW")
+                                                BenillaOptionsSliderRow_Setup(this, 1.22173, 2.44346, 0.0349066, "deg")
+                                            </OnLoad></Scripts>
+                                        </Frame>
+                                        <Frame name="$parentRowMaxFps" inherits="BenillaOptionsSliderRowTemplate">
+                                            <Anchors>
+                                                <Anchor point="TOPLEFT" relativeTo="$parentRowFieldOfView" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                                <Anchor point="TOPRIGHT" relativeTo="$parentRowFieldOfView" relativePoint="BOTTOMRIGHT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                            </Anchors>
+                                            <Scripts><OnLoad>
+                                                BenillaOptionsRow_OnLoad(this, "maxFPS", "Max Frame Rate",
+                                                    "BENILLA_TOOLTIP_MAX_FPS")
+                                                BenillaOptionsSliderRow_Setup(this, 0, 240, 10, "fps")
+                                            </OnLoad></Scripts>
+                                        </Frame>
+                                        <Frame name="$parentRowBackgroundFps" inherits="BenillaOptionsSliderRowTemplate">
+                                            <Anchors>
+                                                <Anchor point="TOPLEFT" relativeTo="$parentRowMaxFps" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                                <Anchor point="TOPRIGHT" relativeTo="$parentRowMaxFps" relativePoint="BOTTOMRIGHT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                            </Anchors>
+                                            <Scripts><OnLoad>
+                                                BenillaOptionsRow_OnLoad(this, "maxFPSBk", "Background Frame Rate",
+                                                    "BENILLA_TOOLTIP_BACKGROUND_FPS")
+                                                BenillaOptionsSliderRow_Setup(this, 0, 60, 5, "fps")
+                                            </OnLoad></Scripts>
+                                        </Frame>
+                                        <Frame name="$parentRowPlayerRenderDist" inherits="BenillaOptionsSliderRowTemplate">
+                                            <Anchors>
+                                                <Anchor point="TOPLEFT" relativeTo="$parentRowBackgroundFps" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                                <Anchor point="TOPRIGHT" relativeTo="$parentRowBackgroundFps" relativePoint="BOTTOMRIGHT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                            </Anchors>
+                                            <Scripts><OnLoad>
+                                                BenillaOptionsRow_OnLoad(this, "PB_PlayerRenderDist", "Player Draw Distance",
+                                                    "BENILLA_TOOLTIP_PLAYER_RENDER_DIST")
+                                                BenillaOptionsSliderRow_Setup(this, -1, 100, 5, "dist")
                                             </OnLoad></Scripts>
                                         </Frame>
                                         <Frame name="$parentRowDisplayMode" inherits="BenillaOptionsDropdownRowTemplate">
                                             <Anchors>
-                                                <Anchor point="TOPLEFT" relativeTo="$parentRowWeatherDensity" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
-                                                <Anchor point="TOPRIGHT" relativeTo="$parentRowWeatherDensity" relativePoint="BOTTOMRIGHT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                                <Anchor point="TOPLEFT" relativeTo="$parentRowPlayerRenderDist" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
+                                                <Anchor point="TOPRIGHT" relativeTo="$parentRowPlayerRenderDist" relativePoint="BOTTOMRIGHT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
                                             </Anchors>
                                             <Scripts><OnLoad>
                                                 -- Deviation: modern Classic's two-entry Display
@@ -2025,7 +2266,7 @@
                                     <Scripts>
                                         <OnShow>
                                             for i, name in BENILLA_GRAPHICS_SLIDER_ROWS do
-                                                local info = OptionsFrameSliders[i]
+                                                local info = BenillaOptionsSliderInfo(i)
                                                 local row = getglobal(this:GetName() .. name)
                                                 if ( info and row ) then
                                                     BenillaOptionsSliderRow_Setup(row, info.minValue, info.maxValue,
@@ -3130,5 +3371,156 @@
     <Script><![CDATA[
         -- The reference's OptionsFrame row (UIParent.lua:16): the centre slot, openable while dead.
         UIPanelWindows["BenillaOptionsFrame"] = { area = "center", pushable = 0, whileDead = 1 }
+
+        -- ── A server's own settings window: ours keeps only benilla's own ──
+        -- OctoWoW's interface ships a settings window of its own whose rows are the global
+        -- `GameOptions`, each naming a `cvar`, a `uvar` or a `getter`. Every row of ours bound to
+        -- one of those is that window's to show, so ours drops it, and a category left empty
+        -- goes; so do the key bindings, which the server's game menu opens. With no such window
+        -- (the stock interface) nothing changes.
+
+        -- Rows that set what a server row sets under another name.
+        BENILLA_SERVER_OPTION_ALIASES = {
+            RowWorldDetail = "smallCull",
+            RowMultiBar1 = "MultiBar1_IsVisible",
+            RowMultiBar2 = "MultiBar2_IsVisible",
+            RowMultiBar3 = "MultiBar3_IsVisible",
+            RowMultiBar4 = "MultiBar4_IsVisible",
+            -- Benilla's own extended ranges: no server option covers them.
+            RowViewDistance = "benillaViewDistance",
+            RowPerformancePreset = "benillaPerformancePreset",
+            RowDetailDistance = "benillaDetailDistance",
+            RowFieldOfView = "benillaFieldOfView",
+            RowMaxFps = "benillaMaxFps",
+            RowBackgroundFps = "benillaBackgroundFps",
+            RowPlayerRenderDist = "benillaPlayerRenderDist",
+        }
+
+        -- Rows the server's game menu covers through a key binding instead of a settings row: the
+        -- plate toggles are its Key Bindings window's `NAMEPLATES` and `FRIENDNAMEPLATES`
+        -- (`Bindings.xml`), whose state the server's options save (`NAMEPLATES_ON`).
+        BENILLA_SERVER_BINDING_ROWS = {
+            RowEnemyPlates = "NAMEPLATES",
+            RowFriendlyPlates = "FRIENDNAMEPLATES",
+        }
+
+        -- Whether the key bindings list `command`.
+        function BenillaOptions_HasBinding(command)
+            for i = 1, GetNumBindings() do
+                if GetBinding(i) == command then return true end
+            end
+            return nil
+        end
+
+        -- The category list's two groups, each under its header, in list order.
+        BENILLA_OPTIONS_CATEGORY_GROUPS = {
+            { header = "Gameplay", keys = { "Controls", "Interface", "ActionBars", "Combat",
+                "Chat", "Keybindings", "Nameplates" } },
+            { header = "System", keys = { "Graphics", "Audio" } },
+        }
+
+        -- Every `cvar`, `uvar` and `getter` the server's rows name, lower-cased.
+        function BenillaOptions_ServerKeys()
+            local keys = {}
+            local function walk(t)
+                for k, v in pairs(t) do
+                    if type(v) == "table" then
+                        walk(v)
+                    elseif type(v) == "string" and (k == "cvar" or k == "uvar" or k == "getter") then
+                        keys[string.lower(v)] = v
+                    end
+                end
+            end
+            walk(GameOptions)
+            return keys
+        end
+
+        function BenillaOptions_ServerCovers(keys, rkey, row)
+            local binding = BENILLA_SERVER_BINDING_ROWS[rkey]
+            if binding then return BenillaOptions_HasBinding(binding) end
+            local alias = BENILLA_SERVER_OPTION_ALIASES[rkey]
+            if alias then return keys[string.lower(alias)] ~= nil end
+            if row.cvar then return keys[string.lower(row.cvar)] ~= nil end
+            if row.uvar then return keys[string.lower(row.uvar)] ~= nil end
+            if row.getFunc then
+                for _, name in pairs(keys) do
+                    if getglobal(name) == row.getFunc then return true end
+                end
+            end
+            return nil
+        end
+
+        -- The category list re-chained over the categories left: each group's rows under its
+        -- header, 2 apart, the second header 22 under the last row before it.
+        function BenillaOptions_ChainCategories()
+            local list = "BenillaOptionsFrameCategoryList"
+            local prev = nil
+            for _, group in ipairs(BENILLA_OPTIONS_CATEGORY_GROUPS) do
+                local header = getglobal(list .. "Header" .. group.header)
+                local shown = {}
+                for _, k in ipairs(group.keys) do
+                    local row = getglobal(list .. "Row" .. k)
+                    if BENILLA_OPTIONS_PAGE_ROWS[k] or (k == "Keybindings"
+                            and not BENILLA_OPTIONS_NO_KEYBINDINGS) then
+                        table.insert(shown, row)
+                    else
+                        row:Hide()
+                    end
+                end
+                if table.getn(shown) == 0 then
+                    header:Hide()
+                else
+                    header:ClearAllPoints()
+                    if prev then
+                        header:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -22)
+                    else
+                        header:SetPoint("TOPLEFT", list, "TOPLEFT", 0, 0)
+                    end
+                    prev = header
+                    for _, row in ipairs(shown) do
+                        row:ClearAllPoints()
+                        row:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -2)
+                        prev = row
+                    end
+                end
+            end
+        end
+
+        function BenillaOptions_TrimToServerOptions()
+            if type(GameOptions) ~= "table" then
+                return
+            end
+            local keys = BenillaOptions_ServerKeys()
+            local body = "BenillaOptionsFrameContainerBody"
+            for page, rows in pairs(BENILLA_OPTIONS_PAGE_ROWS) do
+                local kept = {}
+                for _, rkey in ipairs(rows) do
+                    local row = getglobal(body .. page .. rkey)
+                    if BenillaOptions_ServerCovers(keys, rkey, row) then
+                        row:Hide()
+                    else
+                        table.insert(kept, rkey)
+                    end
+                end
+                if table.getn(kept) == 0 then
+                    BENILLA_OPTIONS_PAGE_ROWS[page] = nil
+                    getglobal(body .. page):Hide()
+                else
+                    BENILLA_OPTIONS_PAGE_ROWS[page] = kept
+                    BenillaOptionsPage_Layout(page)
+                end
+            end
+            BENILLA_OPTIONS_NO_KEYBINDINGS = 1
+            getglobal(body .. "Keybindings"):Hide()
+            local left = {}
+            for _, k in ipairs(BENILLA_OPTIONS_CATEGORY_KEYS) do
+                if BENILLA_OPTIONS_PAGE_ROWS[k] then table.insert(left, k) end
+            end
+            BENILLA_OPTIONS_CATEGORY_KEYS = left
+            BenillaOptionsFrame.selectedCategory = left[1]
+            BenillaOptions_ChainCategories()
+        end
+
+        BenillaOptions_TrimToServerOptions()
     ]]></Script>
 </Ui>

@@ -209,3 +209,54 @@ fn the_bound_spell_resolves_through_the_same_parse() {
     assert_eq!(resolve("Fireball(Rank 1)(Rank 2)"), None);
     assert_eq!(resolve("Seduction()"), Some((6358, true)));
 }
+
+/// SuperWoW's unit argument: a token or a guid binds the cast at that unit, never `onSelf`; a
+/// token naming nobody casts nothing; a number or a word that is no token keeps the stock
+/// `onSelf`.
+#[test]
+fn superwow_casts_at_the_named_unit() {
+    use crate::script::{ScriptCall, UnitGuids};
+    let mut s = vm(ranked(), PetBookState::default());
+    s.set_unit_guids(&UnitGuids {
+        player: 0x10,
+        party: [0x21, 0, 0, 0],
+        ..Default::default()
+    });
+    let unit_of = |s: &mut UiScript, args: &str| {
+        s.run(&format!("CastSpellByName({args})")).unwrap();
+        s.take_script_calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                ScriptCall::CastSpell {
+                    spell_id,
+                    on_self,
+                    unit,
+                    ..
+                } => Some((spell_id, on_self, unit)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        unit_of(&mut s, r#""Frost Armor", "party1""#),
+        vec![(168, false, Some(0x21))]
+    );
+    assert_eq!(
+        unit_of(&mut s, r#""Frost Armor", "0x21""#),
+        vec![(168, false, Some(0x21))]
+    );
+    assert_eq!(unit_of(&mut s, r#""Frost Armor", "party3""#), vec![]);
+    assert_eq!(
+        unit_of(&mut s, r#""Frost Armor", 1"#),
+        vec![(168, true, None)]
+    );
+    // Not a token: the stock coercion, a word it does not know reading false.
+    assert_eq!(
+        unit_of(&mut s, r#""Frost Armor", "bogus""#),
+        vec![(168, false, None)]
+    );
+    assert_eq!(
+        unit_of(&mut s, r#""Frost Armor", "true""#),
+        vec![(168, true, None)]
+    );
+}

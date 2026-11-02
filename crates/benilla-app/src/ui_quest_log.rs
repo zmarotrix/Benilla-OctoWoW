@@ -635,6 +635,8 @@ impl Plugin for UiQuestLogPlugin {
                     .in_set(UiFeed)
                     .run_if(not(crate::ui_script::ingame_ui_up)),
             );
+        crate::live_data::loader(app, load_quest_header_names);
+        crate::live_data::loader(app, load_quest_tag_names);
     }
 }
 
@@ -1316,8 +1318,8 @@ mod tests {
         fn write_log(&mut self, log: &[u32]) {
             for slot in 0..PLAYER_QUEST_LOG_SLOTS {
                 let id = log.get(usize::from(slot)).copied().unwrap_or(0);
-                self.fields
-                    .insert(FIELD_PLAYER_QUEST_LOG_1_1 + 3 * u16::from(slot), id);
+                let field = benilla_protocol::messages::quest_log_slot_field(slot).unwrap();
+                self.fields.insert(field, id);
             }
             self.write_store();
         }

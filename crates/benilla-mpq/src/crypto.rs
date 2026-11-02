@@ -1,6 +1,6 @@
 //! The Storm (MPQ) crypto, byte-exact with the client: the string hash and the block decryptor,
-//! both over one 0x500-entry table. 1.12.1 archives carry no encrypted files, so only the hash and
-//! block tables are ever decrypted.
+//! both over one 0x500-entry table. Stock 1.12.1 archives decrypt only their hash and block
+//! tables; a server's own patch archives may also encrypt files, which [`file_key`] keys.
 
 /// The 0x500-entry encryption table, built at compile time by the seed walk the client runs.
 const fn encryption_table() -> [u32; 0x500] {
@@ -72,6 +72,38 @@ pub fn decrypt_block(data: &mut [u32], mut key: u32) {
             .wrapping_add(seed)
             .wrapping_add(seed << 5)
             .wrapping_add(3);
+    }
+}
+
+/// Decrypt the whole `u32`s of `bytes` in place with `key`; a tail shorter than a word stays
+/// plain, as Storm leaves it.
+pub fn decrypt_bytes(bytes: &mut [u8], key: u32) {
+    let mut words = to_words(bytes);
+    decrypt_block(&mut words, key);
+    for (chunk, w) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+        *chunk = w.to_le_bytes();
+    }
+}
+
+fn to_words(bytes: &[u8]) -> Vec<u32> {
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
+        .collect()
+}
+
+/// An encrypted file's key: the hash of its name past the last separator, and under `FIX_KEY`
+/// (`0x00020000`) offset by its block position and xored with its size, so that two copies of
+/// one name in an archive do not share a keystream.
+pub fn file_key(name: &str, file_pos: u32, file_size: u32, fix_key: bool) -> u32 {
+    let base = name.rsplit(['\\', '/']).next().unwrap_or(name);
+    let key = hash_string(base, hash_type::FILE_KEY);
+    if fix_key {
+        key.wrapping_add(file_pos) ^ file_size
+    } else {
+        key
     }
 }
 

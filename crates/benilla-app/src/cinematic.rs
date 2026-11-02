@@ -240,6 +240,7 @@ impl Plugin for CinematicPlugin {
                 OnExit(ClientState::InWorld),
                 abandon_on_leaving_world.in_set(crate::ui_script::SessionEnd::Clears),
             );
+        crate::live_data::loader(app, load_catalog);
     }
 }
 

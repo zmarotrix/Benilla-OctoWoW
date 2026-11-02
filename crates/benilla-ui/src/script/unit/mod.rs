@@ -218,10 +218,10 @@ pub struct UnitState {
     /// including `"player"`; the reference has no separate player combat flag.
     pub in_combat: bool,
     /// A held player's `PLAYER_QUEST_LOG` window, `[quest id, count-state, timer]` per slot, all
-    /// zero off a player: the 20 slots of 12 bytes at `[player+0xe68]+0x28` that `IsUnitOnQuest`
+    /// zero off a player: the [`crate::script::QUEST_LOG_SLOTS`] slots of 12 bytes at `[player+0xe68]+0x28` that `IsUnitOnQuest`
     /// scans (`0x4dfebd`) and the `UNIT_QUEST_LOG_CHANGED` watch compares (`0x51bc63`). Whole, so
     /// a change anywhere in it is a snapshot change; a group mate's carries the ids alone.
-    pub quest_log: [[u32; 3]; 20],
+    pub quest_log: [[u32; 3]; crate::script::QUEST_LOG_SLOTS],
     /// `PLAYER_BYTES_3` byte 1, the drunkenness, 0 off a player. The active player's lowers the
     /// level `UnitLevel` (`0x5180a0`) and the unit tooltip (`0x52a397`) show of a unit it can
     /// attack.
@@ -565,7 +565,7 @@ impl super::UiScript {
     }
 }
 
-use resolve::token_recognised;
+pub(crate) use resolve::token_recognised;
 
 /// The resolver's token check: an unrecognised token raises `Unknown unit name`, as `0x515970`
 /// ends in `luaL_error`; `""`, an absent token and a recognised one naming nothing pass. Whether
@@ -622,6 +622,11 @@ pub(crate) fn view_of_guid<'m>(lua: &Lua, model: &'m Model, guid: u64) -> Cow<'m
 }
 
 fn view_as<'m>(lua: &Lua, model: &'m Model, token: &str, thin: bool) -> Option<Cow<'m, UnitState>> {
+    // SuperWoW's `owner` suffix: the owner's guid, read as a builder by guid reads it.
+    if resolve::owner_of_token(token).is_some() {
+        let guid = resolve::resolve_token(lua, &model.unit_guids, token).ok()??;
+        return Some(view_of_guid(lua, model, guid));
+    }
     let snapshot = model.snapshot_unit(token);
     let UnitTokenParse::Unit { base, hops } = parse_unit_token(token) else {
         return snapshot.map(Cow::Borrowed);
@@ -856,8 +861,9 @@ pub use record::{PlayerNameQuery, UnitRecord, UnitRecordQuery};
 pub(crate) use relations::with_relations;
 pub use relations::{RelationAnswer, RelationQuery, UnitRelations};
 pub use resolve::{
-    bound_tokens_in, field_watchers_in, parse_unit_token, resolve_unit_in, tokens_in, UnitBase,
-    UnitGuids, UnitTokenGlobals, UnitTokenObjects, UnitTokenParse,
+    bound_tokens_in, field_watchers_in, owner_in_fields, owner_of_token, parse_unit_token,
+    resolve_unit_in, tokens_in, UnitBase, UnitGuids, UnitTokenGlobals, UnitTokenObjects,
+    UnitTokenParse,
 };
 pub(crate) use resolve::{token_flags_in, token_guid, with_live_objects, LiveGlobals};
 pub use selection_read::{ObjectNameQuery, SelectionGlobals, SelectionQuery};

@@ -811,6 +811,39 @@ impl Plugin for EntitiesPlugin {
                 .after(apply_unit_mat_alpha)
                 .before(crate::player::apply_self_model_fade),
         );
+        crate::live_data::loader(app, reload_catalogs);
+    }
+}
+
+/// Rebuild every model in view: the display and skin caches go and each attached entity's visual
+/// is torn down for `attach_entity_visuals` to build again, as a live display swap does
+/// ([`live_display`]), off whatever the chain now holds. A server's streamed content changed a
+/// model or a texture behind one ([`crate::content_stream`]).
+pub(crate) fn rebuild_all_models(world: &mut World) {
+    if let Some(mut c) = world.get_resource_mut::<Creatures>() {
+        c.models.clear();
+    }
+    if let Some(mut g) = world.get_resource_mut::<GameObjects>() {
+        g.models.clear();
+    }
+    if let Some(mut i) = world.get_resource_mut::<equipment::ItemDisplays>() {
+        i.models.clear();
+    }
+    if let Some(mut g) = world.get_resource_mut::<ItemGlows>() {
+        g.models.clear();
+    }
+    if let Some(mut fx) = world.get_resource_mut::<spell_fx::SpellFx>() {
+        fx.models.clear();
+    }
+    if let Some(mut composites) = world.get_resource_mut::<SkinComposites>() {
+        composites.clear();
+    }
+    if let Some(mut bones) = world.get_resource_mut::<corpse::BonesModels>() {
+        bones.0.clear();
+    }
+    let mut q = world.query::<&mut live_display::AppliedDisplay>();
+    for mut applied in q.iter_mut(world) {
+        applied.0 = None;
     }
 }
 
@@ -839,9 +872,21 @@ fn setup_entities(
         npc_mat: mat(0.9, 0.25, 0.2),    // red: NPCs
     });
 
-    let Some(world_assets) = world_assets else {
-        return;
-    };
+    if let Some(world_assets) = world_assets {
+        load_catalogs(&mut commands, &world_assets);
+    }
+}
+
+/// [`setup_entities`]' tables, again: a server's streamed content changed one
+/// ([`crate::live_data`]). The display caches go with the catalogs, so models rebuild.
+fn reload_catalogs(mut commands: Commands, world_assets: Option<Res<WorldAssets>>) {
+    if let Some(world_assets) = world_assets {
+        load_catalogs(&mut commands, &world_assets);
+    }
+}
+
+/// Load the display and data catalogs off the chain.
+fn load_catalogs(commands: &mut Commands, world_assets: &WorldAssets) {
     let mut chain = world_assets.chain.lock_recover();
     match load_creature_catalog(&mut chain) {
         Ok(catalog) => {

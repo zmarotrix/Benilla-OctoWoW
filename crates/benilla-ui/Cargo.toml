@@ -14,6 +14,8 @@ workspace = true
 test-support = []
 
 [dependencies]
+# The quest log's slot count, one value shared with the wire's field map (`QUEST_LOG_SLOTS`).
+benilla-protocol = { path = "../benilla-protocol" }
 roxmltree = "0.20"
 # The script host's Lua: benilla's own interpreter, through a crate that answers to the name
 # `mlua` (`src/lib.rs`).

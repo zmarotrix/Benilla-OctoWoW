@@ -119,4 +119,5 @@ pub(super) fn plugin(app: &mut App) {
             OnExit(crate::client_state::ClientState::InWorld),
             leave_world,
         );
+    crate::live_data::loader(app, load_providers);
 }

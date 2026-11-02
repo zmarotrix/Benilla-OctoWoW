@@ -57,7 +57,7 @@ use booth::{
 mod drain;
 pub(crate) use drain::PortraitMarks;
 mod dressup;
-pub(crate) use dressup::{DressUpBake, DressUpLook, DressUpPreview};
+pub(crate) use dressup::{DressUpBake, DressUpBakes, DressUpLook, DressUpPreview};
 mod glue_booth;
 /// A model file's own authored lights, folded as the reference's gather does (`0x718960`).
 pub(crate) use glue_booth::{scene_rig, SceneRig};
@@ -772,7 +772,7 @@ impl Plugin for PortraitPlugin {
             .init_resource::<glue_booth::GluePreviewBake>()
             .init_resource::<glue_booth::GluePetBake>()
             .init_resource::<dressup::DressUpPreview>()
-            .init_resource::<dressup::DressUpBake>()
+            .init_resource::<dressup::DressUpBakes>()
             .init_resource::<Booths>()
             .init_resource::<BoothPanes>()
             .init_resource::<GxAspect>()

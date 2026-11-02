@@ -205,6 +205,9 @@ fn every_event_we_fire_is_in_the_reference_table() {
         .skip(1)
         .filter_map(|l| l.split('\t').nth(1))
         .chain(benilla_ui::script::glue_events().iter().copied())
+        // SuperWoW's events, which OctoWoW's client mods add to the in-game table.
+        .chain(benilla_ui::script::SUPERWOW_EVENTS.iter().copied())
+        .chain(benilla_ui::script::NAMPOWER_EVENTS.iter().copied())
         .collect();
     assert!(names.len() > 390, "the catalog stopped being read");
     let mut off: Vec<String> = fire_sites()

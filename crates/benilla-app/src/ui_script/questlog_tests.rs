@@ -1717,7 +1717,7 @@ fn the_stock_title_width_cap_bites_and_is_sticky_per_row_button() {
 
 /// A party member held with `ids` in their quest-log window, named `name`.
 fn mate_on(guid: u64, name: &str, ids: &[u32]) -> benilla_ui::script::UnitState {
-    let mut quest_log = [[0; 3]; 20];
+    let mut quest_log = [[0; 3]; benilla_ui::script::QUEST_LOG_SLOTS];
     for (slot, &id) in quest_log.iter_mut().zip(ids) {
         *slot = [id, 0, 0];
     }

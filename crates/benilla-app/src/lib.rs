@@ -40,6 +40,7 @@ mod client_state;
 mod combat_log;
 mod combat_text;
 mod console;
+mod content_stream;
 mod crash;
 mod creature_anim;
 mod creature_type;
@@ -70,6 +71,7 @@ mod item_names;
 mod item_watch;
 mod items;
 mod lanes;
+mod live_data;
 mod loading_screen;
 mod local_state;
 mod minimap;
@@ -98,10 +100,20 @@ mod run_mode;
 mod screen_fade;
 mod screenshot;
 mod script_calls;
+mod server_extensions;
 mod shaders;
 
+mod announcements;
+mod combat_timers;
 mod game_tip;
+mod immunities;
+mod launcher;
+mod nampower;
+mod nampower_events;
 mod opaque2d;
+mod own_auras;
+mod perf_boost;
+mod player_state;
 /// Where "the client is going down" is observed, in `Last`; every system that persists state on the
 /// way out registers through it.
 mod shutdown;
@@ -110,6 +122,7 @@ mod sound;
 /// The two talent spell-modifier tables (`SMSG_SET_FLAT_/PCT_SPELL_MODIFIER`) and the read that
 /// puts them on a number.
 mod spell;
+mod superwow;
 /// The melee swing refusal's latch + 4 s repeat (`SMSG_ATTACKSWING_*`).
 mod swing_refusal;
 mod target;
@@ -117,6 +130,9 @@ mod target;
 pub(crate) mod test_support;
 mod text_filter;
 mod textinput;
+mod time_of_day;
+mod totems;
+pub mod transfer;
 mod transport;
 mod tutorial;
 mod ui_action;
@@ -187,6 +203,8 @@ mod ui_trainer;
 mod ui_unit;
 mod ui_world_enter;
 mod ui_world_map;
+mod unit_casts;
+mod unitxp;
 mod video;
 mod vm_pass;
 mod vplates;
@@ -196,6 +214,7 @@ mod world_backdrop;
 mod world_console;
 mod world_state;
 mod world_state_ui;
+mod wtf_import;
 
 use bevy::prelude::*;
 
@@ -295,6 +314,20 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
         Ok(data_dir) => data_dir,
         Err(err) => return no_install::fail(&err, run_mode::unattended()),
     };
+    // The folder holding `Data` holds the binaries the version proof hashes.
+    if let Some(install) = data_dir.parent() {
+        benilla_protocol::auth::set_client_dir(install);
+    }
+    // SuperWoW's `ImportFile`/`ExportFile` folder, inside benilla's own state folder, never the
+    // install.
+    if let Some(home) = local_state::home() {
+        benilla_ui::script::set_imports_dir(home.join("imports"));
+    }
+    // A normal client's `WTF` folder dropped into `benilla-config`, taken in before the settings
+    // load.
+    wtf_import::run();
+    // A server's streamed packs mount above the install before any archive opens.
+    content_stream::mount_at_boot(&data_dir);
 
     let mut app = App::new();
     // A command on an entity a same-frame despawn removed logs instead of aborting the session.

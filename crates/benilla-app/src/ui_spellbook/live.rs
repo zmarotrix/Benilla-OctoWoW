@@ -123,6 +123,22 @@ impl crate::script_calls::live::LiveFamily for BookLive<'_, '_> {
         if ask.answer(|_: &BookTabs| self.order().map(|o| o.tabs.clone())) {
             return true;
         }
+        // SuperWoW's `SpellInfo`: any row's name, rank, icon and `SpellRange.dbc` pair.
+        if ask.answer(|q: &benilla_ui::script::SpellInfoQuery| {
+            let spells = self.spells.as_deref()?;
+            Some(spells.catalog.get(q.0).map(|d| {
+                let range = spells.ranges.get(d.range_index);
+                benilla_ui::script::SpellInfoAnswer {
+                    name: d.name.clone(),
+                    rank: d.rank.clone().unwrap_or_default(),
+                    icon: d.icon.clone(),
+                    min_range: range.map_or(0.0, |r| r.min),
+                    max_range: range.map_or(0.0, |r| r.max),
+                }
+            }))
+        }) {
+            return true;
+        }
         // An `enchant:` link's record test (`0x53222e`..`0x532243`): the row's `castUI`.
         if ask.answer(|q: &SpellCastUiQuery| {
             let spells = self.spells.as_deref()?;

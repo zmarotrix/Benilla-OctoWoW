@@ -1,5 +1,5 @@
 //! The zoom: the orbit distance's range, from `cameraDistanceMax` × `cameraDistanceMaxFactor`
-//! under the reference's 0 and 50 yd bounds, and the distance's glide to its target. The zoom
+//! under 0 and 100 yd bounds (the reference's are 0 and 50), and the distance's glide to its target. The zoom
 //! verbs themselves run the distance axis ([`super::camera_axes`]).
 
 use bevy::prelude::*;
@@ -12,16 +12,18 @@ use super::camera::CameraControl;
 /// that `cameraView` 1 picks (`0x50c17a`, `0x50c18b`; the `cameraDistance` CVar itself registers
 /// "0.0"), for a wider view.
 pub(super) const CAM_DIST_MIN: f32 = 0.0;
-/// The zoom ceiling, yd (`ds:0x8089a4` = 50.0): the cap on [`ZoomLimit`] (`0x511309`) and the top
-/// of the distance validator `0x50b310`; also the clamp for a distance read back off disk.
-pub(super) const CAM_DIST_MAX: f32 = 50.0;
+/// The zoom ceiling, yd: the cap on [`ZoomLimit`] (`0x511309`) and the top of the distance
+/// validator `0x50b310`; also the clamp for a distance read back off disk. Deviation: 100, as
+/// OctoWoW's Vanilla Tweaks patches it; the reference's `ds:0x8089a4` is 50.0.
+pub(super) const CAM_DIST_MAX: f32 = 100.0;
 pub(super) const CAM_DIST_DEFAULT: f32 = 15.0;
 /// `cameraDistanceMax`'s registered default, "15.0" (`0x84fbd0`).
 const CAM_DISTANCE_MAX_DEFAULT: f32 = 15.0;
 /// `cameraDistanceMaxFactor`'s registered default, "1.0" (`0x82e92c`). The CVar has no validator:
 /// the options slider's 1 to 2 (`UIOptionsFrame.lua:90`) bounds the slider, not the value.
 const CAM_DISTANCE_MAX_FACTOR_DEFAULT: f32 = 1.0;
-/// `cameraDistanceMax`'s validator (`0x50b310` → `0x50b330(v, 0.0, 50.0)`) accepts `0 ≤ v ≤ 50`;
+/// `cameraDistanceMax`'s validator (`0x50b310` → `0x50b330(v, 0.0, 50.0)`) accepts `0 ≤ v ≤ 50`,
+/// here `0 ≤ v ≤ 100` ([`CAM_DIST_MAX`]);
 /// anything else, NaN included (`fcom` unordered sets C0), is refused and the old value stands.
 pub(crate) const CAM_DISTANCE_MAX_RANGE: std::ops::RangeInclusive<f32> =
     CAM_DIST_MIN..=CAM_DIST_MAX;
@@ -133,25 +135,26 @@ mod tests {
     }
 
     #[test]
-    fn the_limit_holds_to_zero_and_fifty() {
-        assert_eq!(limit(15.0, 4.0), 50.0);
+    fn the_limit_holds_to_zero_and_the_ceiling() {
+        assert_eq!(limit(15.0, 4.0), 60.0);
+        assert_eq!(limit(15.0, 8.0), CAM_DIST_MAX);
         assert_eq!(limit(50.0, 1.0), 50.0);
-        assert_eq!(limit(15.0, f32::INFINITY), 50.0);
+        assert_eq!(limit(15.0, f32::INFINITY), CAM_DIST_MAX);
         assert_eq!(limit(15.0, -2.0), 0.0);
         assert_eq!(limit(15.0, f32::NEG_INFINITY), 0.0);
     }
 
     #[test]
-    fn a_nan_product_fails_both_compares_and_is_fifty() {
-        assert_eq!(limit(15.0, f32::NAN), 50.0);
+    fn a_nan_product_fails_both_compares_and_is_the_ceiling() {
+        assert_eq!(limit(15.0, f32::NAN), CAM_DIST_MAX);
         // 0 × ∞ is NaN too, with both values accepted.
-        assert_eq!(limit(0.0, f32::INFINITY), 50.0);
+        assert_eq!(limit(0.0, f32::INFINITY), CAM_DIST_MAX);
     }
 
     #[test]
     fn cameradistancemax_is_refused_outside_its_validator_range() {
         let mut z = ZoomLimit::default();
-        for bad in [-0.5, 50.5, f32::NAN, f32::INFINITY] {
+        for bad in [-0.5, 100.5, f32::NAN, f32::INFINITY] {
             assert!(!z.set_distance_max(bad), "{bad} is refused");
             assert_eq!(
                 (z.distance_max(), z.max),
@@ -163,7 +166,7 @@ mod tests {
             z.set_distance_max(0.0) && z.max == 0.0,
             "both ends are inclusive"
         );
-        assert!(z.set_distance_max(50.0) && z.max == 50.0);
+        assert!(z.set_distance_max(100.0) && z.max == 100.0);
     }
 
     /// The zoom through the distance axis it queues (`0x50fc60`, `0x50fcd0`), ticked whole.

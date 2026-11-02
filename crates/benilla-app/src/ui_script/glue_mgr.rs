@@ -2286,6 +2286,10 @@ fn seat_glue(
     s.set_glue_realm_cells(mgr.realm_cells);
     s.set_glue_select_cells(mgr.select_cells);
     super::addons::seat_glue_addons(s, addon_reply);
+    if addon_reply.is_none() {
+        let realm = server_name(s);
+        s.seat_launcher_addons(&super::addons::known_characters(&realm));
+    }
     mgr.holder_moved = true;
     if let Some(r) = tables {
         let (categories, types) = r.glue_setup();

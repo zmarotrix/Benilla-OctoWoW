@@ -2035,6 +2035,8 @@ fn the_layer_does_not_grow() {
         "SpellBookAdapters.xml",
         "ScriptLogFrame.xml",
         "FrameXMLFixes.xml",
+        // nampower's Lua-side surface, which OctoWoW's client mods add.
+        "ClientModAdapters.xml",
     ];
     assert_eq!(
         super::addons::Addon::layer().toc.files,

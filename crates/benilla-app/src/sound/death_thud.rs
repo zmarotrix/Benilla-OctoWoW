@@ -168,6 +168,7 @@ fn death_thud_sounds(
 pub(super) fn plugin(app: &mut App) {
     app.add_systems(Startup, load_death_thuds.after(AssetSet::Open))
         .add_systems(Update, death_thud_sounds.in_set(WorldStage::Present));
+    crate::live_data::loader(app, load_death_thuds);
 }
 
 #[cfg(test)]

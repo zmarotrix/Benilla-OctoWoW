@@ -260,6 +260,7 @@ pub(super) fn plugin(app: &mut App) {
     app.init_resource::<VocalSpeech>()
         .add_systems(Startup, load_vocal_ui_sounds.after(AssetSet::Open))
         .add_systems(Update, build_vocal_table.in_set(WorldStage::Stream));
+    crate::live_data::loader(app, load_vocal_ui_sounds);
 }
 
 #[cfg(test)]

@@ -205,8 +205,35 @@ pub mod field {
     };
 }
 
-/// `MAX_QUEST_LOG_SIZE` (`QuestDef.h:34`).
-pub const PLAYER_QUEST_LOG_SLOTS: u8 = 20;
+/// THE quest-log size knob: the slots the server adds past the stock 20. OctoWoW's client adds 5
+/// (its `.octoql` slot lookup `0xd26000`), for 25 in all; every other quest-log size in the
+/// client (the field map, the slot watches, the UI engine's arrays) derives from this one value.
+/// At most 6: the extra slots live in [`FIELD_PLAYER_QUEST_LOG_EXTRA_1_1`]'s 20 dwords.
+pub const PLAYER_QUEST_LOG_EXTRA_SLOTS: u8 = 5;
+/// The stock slots, `MAX_QUEST_LOG_SIZE` (`QuestDef.h:34`), contiguous from
+/// [`FIELD_PLAYER_QUEST_LOG_1_1`].
+pub const PLAYER_QUEST_LOG_STOCK_SLOTS: u8 = 20;
+/// Every quest-log slot: stock then extra.
+pub const PLAYER_QUEST_LOG_SLOTS: u8 = PLAYER_QUEST_LOG_STOCK_SLOTS + PLAYER_QUEST_LOG_EXTRA_SLOTS;
+/// The extra slots' first field: `PLAYER_FIELD_COMBAT_RATING_1` (`UNIT_END + 0x432`), 20 dwords
+/// 1.12 leaves unused, which the OctoWoW client reads 3 dwords a slot past the stock 20.
+pub const FIELD_PLAYER_QUEST_LOG_EXTRA_1_1: u16 = 1262;
+/// `PLAYER_FIELD_COMBAT_RATING_1`'s 20 dwords hold whole 3-dword slots only.
+const _: () = assert!(
+    PLAYER_QUEST_LOG_EXTRA_SLOTS as u16 * 3 <= 20,
+    "PLAYER_QUEST_LOG_EXTRA_SLOTS overflows the COMBAT_RATING block: at most 6"
+);
+
+/// The first field of quest-log `slot` (0-based), or `None` past the last.
+pub const fn quest_log_slot_field(slot: u8) -> Option<u16> {
+    if slot < PLAYER_QUEST_LOG_STOCK_SLOTS {
+        Some(FIELD_PLAYER_QUEST_LOG_1_1 + 3 * slot as u16)
+    } else if slot < PLAYER_QUEST_LOG_SLOTS {
+        Some(FIELD_PLAYER_QUEST_LOG_EXTRA_1_1 + 3 * (slot - PLAYER_QUEST_LOG_STOCK_SLOTS) as u16)
+    } else {
+        None
+    }
+}
 
 /// One `PLAYER_QUEST_LOG` slot, the durable quest state; `SMSG_QUESTUPDATE_*` are only toasts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -662,6 +689,11 @@ impl ObjectFields {
     pub fn is_empty(&self) -> bool {
         self.present.iter().all(|&w| w == 0)
     }
+    /// The dword at `index` as carried, `None` where it was not.
+    pub fn field(&self, index: u16) -> Option<u32> {
+        self.get_raw(index)
+    }
+
     /// Every carried `(index, value)` pair in ascending order, for debugging and probes.
     pub fn raw_fields(&self) -> impl Iterator<Item = (u16, u32)> + '_ {
         self.present.iter().enumerate().flat_map(move |(word, &w)| {

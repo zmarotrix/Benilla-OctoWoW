@@ -59,7 +59,12 @@ impl AssetLoader for BlpImageLoader {
         let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
         Ok(match settings.variant {
             BlpVariant::WorldArt => world_art_image(
-                for_upload(blp_bytes_to_native_chain(&bytes).map_err(to_io)?),
+                for_upload({
+                    let mut chain = blp_bytes_to_native_chain(&bytes).map_err(to_io)?;
+                    // `baseMip` 1: the world's art from its second level, for a small GPU.
+                    crate::tex_filter::skip_top_mips(&mut chain, crate::tex_filter::base_mip());
+                    chain
+                }),
                 // The address mode rides the asset path (`crate::texture_url`): one `.blp` can be
                 // uploaded under two samplers.
                 crate::sampler_mode_of(&ctx.path().to_string()),

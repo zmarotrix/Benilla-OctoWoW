@@ -290,31 +290,72 @@ pub(in crate::minimap) fn emit_party_dots(
         .into_iter()
         .flatten()
     {
-        let d = ((x - ctx.wx).powi(2) + (y - ctx.wy).powi(2)).sqrt();
-        let (rect, block) = if d / ctx.radius_yd > super::BLIP_EDGE_RATIO {
-            // Out of range: the arrow child draws it; only its frame is hit-tested here.
-            (
-                super::rim_arrow_rect(ctx, [x, y, 0.0]),
-                BlipBlock::GroupArrow,
-            )
-        } else {
-            let rect = Rect::from_center_size(
-                ctx.center + ctx.offset([x, y, 0.0]),
-                Vec2::splat(ctx.side * (PARTY_DOT_PX / BLIP_BASIS_PX)),
-            );
-            quads.overlays.push(UiQuad {
-                rect,
-                z_key: ctx.z,
-                texture: Some(icons.clone()),
-                uv: UvRect::from_tex_coords(PARTY_DOT_CELL),
-                color: [1.0, 1.0, 1.0, ctx.alpha],
-                ..default()
-            });
-            (rect, BlipBlock::Dot(4))
+        draw_group_dot(ctx, guid, x, y, icons, quads, hover);
+    }
+}
+
+/// One group member's blip: the blue dot in range, else its rim arrow's frame, hit-tested for the
+/// name tooltip.
+fn draw_group_dot(
+    ctx: &BlipCtx,
+    guid: u64,
+    x: f32,
+    y: f32,
+    icons: &Handle<Image>,
+    quads: &mut UiQuads,
+    hover: &mut MinimapBlipHover,
+) {
+    let d = ((x - ctx.wx).powi(2) + (y - ctx.wy).powi(2)).sqrt();
+    let (rect, block) = if d / ctx.radius_yd > super::BLIP_EDGE_RATIO {
+        // Out of range: the arrow child draws it; only its frame is hit-tested here.
+        (
+            super::rim_arrow_rect(ctx, [x, y, 0.0]),
+            BlipBlock::GroupArrow,
+        )
+    } else {
+        let rect = Rect::from_center_size(
+            ctx.center + ctx.offset([x, y, 0.0]),
+            Vec2::splat(ctx.side * (PARTY_DOT_PX / BLIP_BASIS_PX)),
+        );
+        quads.overlays.push(UiQuad {
+            rect,
+            z_key: ctx.z,
+            texture: Some(icons.clone()),
+            uv: UvRect::from_tex_coords(PARTY_DOT_CELL),
+            color: [1.0, 1.0, 1.0, ctx.alpha],
+            ..default()
+        });
+        (rect, BlipBlock::Dot(4))
+    };
+    if ctx.cursor.is_some_and(|c| rect.contains(c)) {
+        hover.push(block, BlipName::Unit(guid), false);
+    }
+}
+
+/// SuperWoW's `TrackUnit` list ([`crate::superwow::SuperWowTracked`]): each held unit not
+/// already a group record, drawn as a group member is. Deviation: 1.12 has no tracked units.
+pub(in crate::minimap) fn emit_tracked_units(
+    ctx: &BlipCtx,
+    tracked: &[u64],
+    group: &crate::ui_party::GroupState,
+    guids: &GuidIndex,
+    unit_pos: &Query<&GlobalTransform, With<NetEntity>>,
+    pet: Option<u64>,
+    icons: &Handle<Image>,
+    quads: &mut UiQuads,
+    hover: &mut MinimapBlipHover,
+) {
+    let drawn: Vec<u64> = group_records(group, guids, unit_pos, pet)
+        .into_iter()
+        .flatten()
+        .map(|(guid, _)| guid)
+        .collect();
+    for &guid in tracked.iter().filter(|g| !drawn.contains(g)) {
+        let Some(at) = guids.0.get(&guid).and_then(|e| unit_pos.get(*e).ok()) else {
+            continue;
         };
-        if ctx.cursor.is_some_and(|c| rect.contains(c)) {
-            hover.push(block, BlipName::Unit(guid), false);
-        }
+        let [x, y, _] = bevy_to_wow(at.translation());
+        draw_group_dot(ctx, guid, x, y, icons, quads, hover);
     }
 }
 

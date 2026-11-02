@@ -329,27 +329,68 @@ impl super::UiScript {
     /// books and the `/cast` aliases as they stand: the load's and the arrival's every record
     /// (`0x4f0ca0`), the pet message's followers (`0x4f0ce0`).
     pub fn derive_macro_bindings(&mut self, pick: impl Fn(u32, MacroBinding) -> bool) {
-        let aliases = bind::cast_aliases(self.lua());
-        let book = super::live::ask(self.lua(), &super::spellbook::BookNow);
-        let pet_book = super::live::ask(self.lua(), &super::PetBookNow);
-        let mut model = self.model_mut();
-        let model = &mut *model;
-        for record in &model.macros.list {
-            let id = record.view.id;
-            let was = model.macro_bindings.get(&id).copied().unwrap_or_default();
-            if pick(id, was) {
-                let next = bind::derive(
-                    &aliases,
-                    &record.view.body,
-                    book.as_ref().unwrap_or(&model.spellbook),
-                    pet_book.as_ref().unwrap_or(&model.pet_book),
-                    was,
-                );
-                model.macro_bindings.insert(id, next);
-            }
-        }
+        derive_bindings(self.lua(), |id, was, _| pick(id, was));
     }
+}
 
+/// Derive again each record `pick` names by its id, its cast now and its body, returning the
+/// ids whose binding moved. A smart macro's conditional `/cast` resolves through the conditions
+/// as they stand ([`super::smartmacro`]), so no model borrow is held while they are read.
+pub(crate) fn derive_bindings(
+    lua: &mlua::Lua,
+    pick: impl Fn(u32, MacroBinding, &str) -> bool,
+) -> Vec<u32> {
+    let aliases = bind::cast_aliases(lua);
+    let book = super::live::ask(lua, &super::spellbook::BookNow);
+    let pet_book = super::live::ask(lua, &super::PetBookNow);
+    let records: Vec<(u32, String, MacroBinding)> = {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        model
+            .macros
+            .list
+            .iter()
+            .map(|r| {
+                let id = r.view.id;
+                let was = model.macro_bindings.get(&id).copied().unwrap_or_default();
+                (id, r.view.body.clone(), was)
+            })
+            .filter(|(id, body, was)| pick(*id, *was, body))
+            .collect()
+    };
+    let choose = |arg: &str| super::smartmacro::choose_name(lua, arg);
+    let (fallback_book, fallback_pet) = if book.is_none() || pet_book.is_none() {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        (Some(model.spellbook.clone()), Some(model.pet_book.clone()))
+    } else {
+        (None, None)
+    };
+    let player = book.as_ref().or(fallback_book.as_ref()).expect("one book");
+    let pet = pet_book
+        .as_ref()
+        .or(fallback_pet.as_ref())
+        .expect("one pet book");
+    let next: Vec<(u32, MacroBinding, bool)> = records
+        .into_iter()
+        .map(|(id, body, was)| {
+            let n = bind::derive(&aliases, &body, player, pet, was, &choose);
+            (id, n, n != was)
+        })
+        .collect();
+    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    next.into_iter()
+        .filter_map(|(id, b, moved)| {
+            model.macro_bindings.insert(id, b);
+            moved.then_some(id)
+        })
+        .collect()
+}
+
+/// Whether a macro body's cast is conditional, so its binding follows the conditions.
+pub(crate) fn bind_is_smart(body: &str) -> bool {
+    bind::is_smart_body(body)
+}
+
+impl super::UiScript {
     /// Whether a script changed the table since the last call; the app then saves it. The verbs
     /// signal `UPDATE_MACROS` (`0x852460`) themselves, from the order's rebuild (`0x4f0d30`).
     pub fn take_macros_dirty(&mut self) -> bool {
@@ -427,6 +468,9 @@ fn create_macro(
         book.unwrap_or(&model.spellbook),
         pet_book.unwrap_or(&model.pet_book),
         MacroBinding::default(),
+        // A smart macro's conditions cannot be read under the model's borrow: its live
+        // re-derivation binds it ([`super::smartmacro`]).
+        &|_| None,
     );
     model.macro_bindings.insert(id, binding);
     model.macros_dirty = true;
@@ -472,7 +516,7 @@ fn edit_macro(
         let was = model.macro_bindings.get(&id).copied().unwrap_or_default();
         let player = book.unwrap_or(&model.spellbook);
         let pet = pet_book.unwrap_or(&model.pet_book);
-        let binding = bind::derive(aliases, &view.body, player, pet, was);
+        let binding = bind::derive(aliases, &view.body, player, pet, was, &|_| None);
         model.macro_bindings.insert(id, binding);
         model.macros_dirty = true;
         model.macros_generation += 1;

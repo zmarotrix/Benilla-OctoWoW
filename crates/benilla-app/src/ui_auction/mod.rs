@@ -49,6 +49,29 @@ mod verb_tests;
 /// The browse rate limit: `0x4ce980` arms `tick + 0x1388` once sent; a refused query fires nothing.
 pub(super) const QUERY_THROTTLE_SECS: f64 = 5.0;
 
+/// `fastAuctionQueries`: with 1 a browse result opens the throttle as it lands, so the next query
+/// waits on the server's answer and not on the five seconds (AuctionQueryThrottle's behaviour).
+/// The send still arms it, so one query is in flight at a time. Deviation: 1.12 always waits.
+pub(crate) const CVAR_FAST_QUERIES: &str = "fastAuctionQueries";
+
+/// [`CVAR_FAST_QUERIES`] as the list handler reads it: the handler's host holds the CVar table,
+/// so the setting is copied out each frame.
+#[derive(Resource, Default)]
+pub(crate) struct FastAuctionQueries(pub(crate) bool);
+
+fn sync_fast_queries(
+    cvars: Option<Res<crate::cvars::Cvars>>,
+    mut fast: ResMut<FastAuctionQueries>,
+) {
+    let on = cvars
+        .as_deref()
+        .and_then(|c| c.get(CVAR_FAST_QUERIES))
+        .is_some_and(|v| v.trim() != "0");
+    if fast.0 != on {
+        fast.0 = on;
+    }
+}
+
 /// `ItemSubClass.dbc` `DisplayFlags` bit 1: left out of the auction category filter (`0x4cf9c0`).
 const SUBCLASS_HIDDEN_FROM_AUCTIONS: u32 = 0x2;
 
@@ -599,6 +622,8 @@ impl Plugin for UiAuctionPlugin {
     fn build(&self, app: &mut App) {
         net::register(app);
         app.init_resource::<AuctionOpen>()
+            .init_resource::<FastAuctionQueries>()
+            .add_systems(PreUpdate, sync_fast_queries)
             .add_latched_window::<AuctionOpen>()
             // `0x490b25` → `0x4cc2f0` → `0x4cd5f0`, the core.
             .add_sweep_leg(SweepLeg::Auction, close_core)

@@ -492,7 +492,13 @@ pub(crate) fn run_macro(script: &mut UiScript, id: u32) -> bool {
         return false;
     }
     debug!("ui_macro: running macro {id} ({} line(s))", lines.len());
+    // Smart macros' flow (`/stopmacro`, `/skipmacro`, `/firstaction`) is read between lines.
+    // Deviation: 1.12 has no such commands and runs every line.
+    script.begin_macro_run();
     for line in lines {
+        if script.macro_run_stopped() {
+            break;
+        }
         script.fire_event(EXECUTE_CHAT_LINE, vec![ScriptValue::Str(line)]);
     }
     true

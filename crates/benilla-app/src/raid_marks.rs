@@ -45,6 +45,13 @@ pub(crate) struct RaidMarks {
     live: [Option<LiveMark>; 8],
 }
 
+impl RaidMarks {
+    /// Whether a raid mark rides `unit`.
+    pub(crate) fn marks(&self, unit: Entity) -> bool {
+        self.live.iter().flatten().any(|m| m.unit == unit)
+    }
+}
+
 /// A root-level mark billboard, following its unit.
 #[derive(Component)]
 struct RaidMarkBillboard;

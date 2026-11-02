@@ -115,6 +115,7 @@ impl Plugin for UiTradeSkillPlugin {
             .init_resource::<TradeSkillOpen>()
             .init_resource::<TradeSkillRepeatCarry>()
             .add_systems(Startup, load_spell_focus.after(AssetSet::Open));
+        crate::live_data::loader(app, load_spell_focus);
     }
 }
 

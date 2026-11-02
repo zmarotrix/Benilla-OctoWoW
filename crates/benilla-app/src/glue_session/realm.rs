@@ -225,6 +225,8 @@ pub(super) fn build(app: &mut App) {
             Startup,
             (load_categories, load_realm_types).after(benilla_assets::AssetSet::Open),
         );
+    crate::live_data::loader(app, load_categories);
+    crate::live_data::loader(app, load_realm_types);
 }
 
 #[cfg(test)]

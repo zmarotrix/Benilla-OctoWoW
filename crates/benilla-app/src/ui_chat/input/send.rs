@@ -151,6 +151,13 @@ impl ChatSender<'_, '_> {
         }
     }
 
+    /// SuperWoW's `CombatLogAdd`: the line into its log file.
+    pub(crate) fn combat_log_add(&self, text: &str, raw: bool) {
+        if let Some(logs) = self.logs.as_deref() {
+            logs.add(raw, text);
+        }
+    }
+
     /// `SendAddonMessage`'s send (`0x49faff`). The binding has applied the reference's rules
     /// (`0x49f920`: the four distributions, `prefix` TAB `message`, the downgrade outside a raid),
     /// so nothing is refused here. This writes the outbound half of the `addon` trace tag and
@@ -540,6 +547,9 @@ pub(crate) fn run_chat(world: &mut World, lua: &str) -> benilla_ui::mlua::Result
             }
             benilla_ui::script::ScriptCall::Uninvite(name) => sender.uninvite(name),
             benilla_ui::script::ScriptCall::Logging { combat } => sender.logging(script, combat),
+            benilla_ui::script::ScriptCall::CombatLogAdd { text, raw } => {
+                sender.combat_log_add(&text, raw)
+            }
             benilla_ui::script::ScriptCall::RequestTimePlayed => sender.request_time_played(),
             benilla_ui::script::ScriptCall::AddonMessage(send) => sender.addon_message(send),
             other => panic!("not a chat call: {other:?}"),

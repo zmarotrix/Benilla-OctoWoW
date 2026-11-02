@@ -403,6 +403,7 @@ impl Plugin for GameTipPlugin {
                         .after(crate::ui_pass::UiQuadAppend),
                 ),
             );
+        crate::live_data::loader(app, load_game_tips);
     }
 }
 

@@ -77,6 +77,8 @@ pub(crate) struct LoginRequest {
     /// The locale tag the logon challenge carries ([`crate::ui_script::client_locale`]).
     pub(crate) locale: u32,
     pub(crate) generation: u64,
+    /// Open the extension handshake on each world link ([`crate::server_extensions`]).
+    pub(crate) extensions: bool,
 }
 
 /// The park-answer receivers: credentials, and the realm and character requests on the one
@@ -218,11 +220,26 @@ fn addon_records(session: &WorldSession) -> Option<Vec<benilla_protocol::message
 #[derive(Default)]
 struct AddonNews {
     reported: bool,
+    /// The extension handshake's answer has been reported.
+    extensions_reported: bool,
 }
 
 impl AddonNews {
     /// Report the reply if it has been read and not yet reported. `false` is the app gone.
     fn announce(&mut self, session: &WorldSession, events_tx: &Sender<SessionEvent>) -> bool {
+        // The extension handshake's answer is read on the same asks and reported the same way.
+        if !self.extensions_reported {
+            if let Some(extensions) = session.server_extensions() {
+                self.extensions_reported = true;
+                let extensions = extensions.clone();
+                if events_tx
+                    .send(SessionEvent::ServerExtensions { extensions })
+                    .is_err()
+                {
+                    return false;
+                }
+            }
+        }
         if self.reported {
             return true;
         }
@@ -802,6 +819,13 @@ fn world(
         };
         // The new link's counts from its connect, for `GetNetStats` (`0x537b90`).
         ping_clock.lock_recover().traffic = Some(session.traffic());
+        // Sent at once, so the answer is read with the first roster ask; a stock server logs the
+        // query and answers nothing.
+        if req.extensions {
+            if let Err(e) = session.request_extensions(&crate::server_extensions::ours()) {
+                bevy::log::warn!("net: extension handshake not sent: {e:#}");
+            }
+        }
         // A cancel during the queue must not be overtaken by the roster.
         if canceled() {
             return Ok(WorldEnd::Failed);

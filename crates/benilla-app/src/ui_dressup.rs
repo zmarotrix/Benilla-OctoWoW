@@ -7,8 +7,11 @@
 //! ([`try_on_answered`]). There is no fit check: the reference previews whatever it is handed
 //! (`DressUpFrame.lua:2-16`).
 
+use std::collections::HashMap;
+
 use benilla_protocol::CharEnumItem;
 use benilla_ui::script::{DressUpIntent, UiScript};
+use benilla_ui::widget::FrameHandle;
 use bevy::prelude::*;
 
 use crate::entities::equip_slot;
@@ -106,8 +109,14 @@ fn lanes_coexist(main: u8, off: u8, dual_wield: bool) -> bool {
     matches!(main, 13 | 21) && (matches!(off, 14 | 23) || (dual_wield && matches!(off, 13 | 22)))
 }
 
-/// The room's substitutions over the player's own gear, resolved and pending.
+/// Every shown dress-up pane's room, by pane: each widget edits its own clone of the player
+/// (`0x5059a0`), so the dressing room, the auction house's and a server's own panes (OctoWoW's
+/// shop cards, several at once) each wear their own try-ons.
 #[derive(Resource, Default)]
+pub(crate) struct DressUpRooms(HashMap<FrameHandle, DressUpRoom>);
+
+/// One pane's substitutions over the player's own gear, resolved and pending.
+#[derive(Default)]
 pub(crate) struct DressUpRoom {
     /// False after [`Self::close`]: the booth is empty.
     open: bool,
@@ -161,9 +170,10 @@ impl DressUpRoom {
         0
     }
 
-    /// Both panes hidden, so the booth empties. The reference's widget keeps its state while
-    /// hidden, but `DressUpItem` re-issues `SetUnit("player")` on a hidden frame, so the kept
-    /// state is never seen.
+    /// The pane hidden, so its booth empties, as [`DressUpSteps`] drops a hidden pane's room. The
+    /// reference's widget keeps its state while hidden, but `DressUpItem` re-issues
+    /// `SetUnit("player")` on a hidden frame, so the kept state is never seen.
+    #[cfg(test)]
     fn close(&mut self) {
         self.open = false;
         self.bare = false;
@@ -248,13 +258,6 @@ fn not_equippable(inventory_type: u32) -> bool {
     matches!(inventory_type, 0 | 18 | 24 | 27) || inventory_type > 28
 }
 
-/// Whether a dressing-room pane is shown: the dressing room's or the auction house's
-/// `AuctionDressUpFrame`, read off the frames (the stock files carry no hook of ours). A hidden
-/// pane has no model, and a verb on it does nothing (`0x504596`).
-fn pane_shown(script: &UiScript) -> bool {
-    script.frame_visible("DressUpFrame") || script.frame_visible("AuctionDressUpFrame")
-}
-
 /// Show `refused` `ERR_NOT_EQUIPPABLE` lines (`0x504b2d`, `push 0x13; call 0x496720`), each as
 /// `DisplayError` shows it, under the call's input events.
 fn show_refusals(script: &mut UiScript, sink: &mut crate::ui_action::MessageSink, refused: u32) {
@@ -270,52 +273,62 @@ fn show_refusals(script: &mut UiScript, sink: &mut crate::ui_action::MessageSink
 /// and the frame's turn for the records that landed since.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct DressUpSteps<'w> {
-    /// Absent in a harness without the room.
-    room: Option<ResMut<'w, DressUpRoom>>,
+    /// Absent in a harness without the rooms.
+    rooms: Option<ResMut<'w, DressUpRooms>>,
     items: Option<Res<'w, Items>>,
     commands: Option<Res<'w, NetCommands>>,
     sink: crate::ui_action::MessageSink<'w>,
 }
 
 impl DressUpSteps<'_> {
-    /// One verb inside its call: a try-on looks its record up in the cache as it stands at the
-    /// call (`0x504579`), and a cached one goes on, or refuses, before the verb returns
-    /// (`0x5045dd`-`0x5045ee`, `0x504b2d`).
-    pub(crate) fn apply(&mut self, script: &mut UiScript, intent: DressUpIntent) {
-        let (Some(room), Some(items), Some(commands)) = (
-            self.room.as_deref_mut(),
+    /// One verb inside its call on `pane`'s room: a try-on looks its record up in the cache as
+    /// it stands at the call (`0x504579`), and a cached one goes on, or refuses, before the verb
+    /// returns (`0x5045dd`-`0x5045ee`, `0x504b2d`). A hidden pane has no model, and a verb on it
+    /// does nothing (`0x504596`).
+    pub(crate) fn apply(
+        &mut self,
+        script: &mut UiScript,
+        pane: FrameHandle,
+        intent: DressUpIntent,
+    ) {
+        let (Some(rooms), Some(items), Some(commands)) = (
+            self.rooms.as_deref_mut(),
             self.items.as_deref(),
             self.commands.as_deref(),
         ) else {
             return;
         };
-        if !pane_shown(script) {
+        if !script.frame_handle_visible(pane) {
             return;
         }
-        let refused = room.step([intent], items, commands);
+        let refused = rooms
+            .0
+            .entry(pane)
+            .or_default()
+            .step([intent], items, commands);
         show_refusals(script, &mut self.sink, refused);
     }
 
-    /// The frame's turn: the room emptied when no pane is shown.
+    /// The frame's turn: a hidden pane's room is dropped, emptying its booth.
     fn frame(&mut self, script: &mut UiScript) {
-        let Some(room) = self.room.as_deref_mut() else {
+        let Some(rooms) = self.rooms.as_deref_mut() else {
             return;
         };
-        if !pane_shown(script) {
-            room.close();
-        }
+        rooms.0.retain(|&pane, _| script.frame_handle_visible(pane));
     }
 
     /// The callback `0x504ba0` on a found record of `entry`, inside its answer: `TryOn` again on
-    /// a shown pane (`0x504596`), whose refusal shows there (`0x504b2d`).
+    /// each shown pane that waits on it (`0x504596`), whose refusal shows there (`0x504b2d`).
     fn answered(&mut self, script: &mut UiScript, entry: u32) {
-        let (Some(room), Some(items)) = (self.room.as_deref_mut(), self.items.as_deref()) else {
+        let (Some(rooms), Some(items)) = (self.rooms.as_deref_mut(), self.items.as_deref()) else {
             return;
         };
-        if !pane_shown(script) {
-            return;
+        let mut refused = 0;
+        for (&pane, room) in rooms.0.iter_mut() {
+            if room.pending.contains(&entry) && script.frame_handle_visible(pane) {
+                refused += room.answered(entry, items);
+            }
         }
-        let refused = room.answered(entry, items);
         show_refusals(script, &mut self.sink, refused);
     }
 }
@@ -344,13 +357,13 @@ pub(crate) struct DressUpUiPlugin;
 
 impl Plugin for DressUpUiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<DressUpRoom>()
+        app.init_resource::<DressUpRooms>()
             .add_systems(Update, compose_dressup.in_set(UiDrain));
     }
 }
 
-/// The booth's look, each frame: the room's turn ([`DressUpSteps::frame`]), then the player's own
-/// look with the room's substitutions written in, pushed to the pane when it moved.
+/// Each pane's look, each frame: the rooms' turn ([`DressUpSteps::frame`]), then the player's own
+/// look with each room's substitutions written in, pushed to its pane when it moved.
 #[allow(clippy::type_complexity)]
 fn compose_dressup(
     // The room, beside the host that applies the verbs to it, and the player the pane clones,
@@ -392,19 +405,28 @@ fn compose_dressup(
     // builds.
     let dual_wield = known.0.knows_dual_wield(known.1.as_deref());
     let (steps, me) = vm.own();
-    let (Some(room), Some(items)) = (steps.room.as_deref(), steps.items.as_deref()) else {
+    let (Some(rooms), Some(items)) = (steps.rooms.as_deref(), steps.items.as_deref()) else {
         return;
     };
-    let look = match (room.open, me.single().ok()) {
-        (true, Some((store, net, pins))) => player_look(store, net, pins, room, items, dual_wield)
-            .map(|l| DressUpLook {
-                emblem: crate::ui_guild::unit_guild_emblem(&store.0, &guilds, Ask::New(&commands)),
-                ..l
-            }),
-        _ => None,
+    let looks: HashMap<FrameHandle, DressUpLook> = match me.single().ok() {
+        Some((store, net, pins)) => {
+            let emblem = (!rooms.0.is_empty())
+                .then(|| crate::ui_guild::unit_guild_emblem(&store.0, &guilds, Ask::New(&commands)))
+                .flatten();
+            rooms
+                .0
+                .iter()
+                .filter(|(_, room)| room.open)
+                .filter_map(|(&pane, room)| {
+                    player_look(store, net, pins, room, items, dual_wield)
+                        .map(|l| (pane, DressUpLook { emblem, ..l }))
+                })
+                .collect()
+        }
+        None => HashMap::new(),
     };
-    if preview.look != look {
-        preview.look = look;
+    if preview.looks != looks {
+        preview.looks = looks;
     }
 }
 
@@ -1036,13 +1058,73 @@ mod tests {
             seen
         });
         // No frame has run since: the room is as the call left it.
-        let worn_chest = app.world().resource::<DressUpRoom>().worn[4].is_some();
+        let rooms = app.world().resource::<DressUpRooms>();
+        let worn_chest = rooms.0.values().any(|room| room.worn[4].is_some());
         assert_eq!(
             seen.as_deref(),
             Some("That item can't be equipped."),
             "the refusal signals inside the call"
         );
         assert!(worn_chest, "the cached chest went on inside its call");
+    }
+
+    /// Each dress-up pane wears its own try-ons, as each widget edits its own clone (`0x5059a0`):
+    /// two panes shown at once (OctoWoW's shop cards) keep two looks, outside the stock dressing
+    /// room, and a hidden pane's room goes.
+    #[test]
+    fn each_shown_pane_keeps_its_own_try_ons() {
+        let mut app = crate::game_plugins::schedule_tests::headless_client();
+        app.insert_resource(bevy::ecs::error::DefaultErrorHandler(
+            bevy::ecs::error::ignore,
+        ));
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        app.insert_resource(NetCommands(tx));
+        app.update();
+        {
+            let mut items = app.world_mut().resource_mut::<Items>();
+            items.insert_template(2000, Some(worn("Shiny Chest", 7000, 5)));
+            items.insert_template(3000, Some(worn("Plain Hood", 8000, 1)));
+        }
+        let mut s = UiScript::new().expect("a VM");
+        s.set_screen_size(800.0, 600.0);
+        app.insert_non_send_resource(s);
+        crate::script_calls::with_hosted_vm(app.world_mut(), |s| {
+            s.expect("a VM")
+                .run(
+                    r#"
+                    local shop = CreateFrame("Frame", "ShopFrame", UIParent)
+                    a = CreateFrame("DressUpModel", "CardA", shop)
+                    b = CreateFrame("DressUpModel", "CardB", shop)
+                    a:SetUnit("player") a:Undress() a:TryOn(2000)
+                    b:SetUnit("player") b:Undress() b:TryOn(3000)
+                    "#,
+                )
+                .expect("the cards");
+        });
+        let rooms = app.world().resource::<DressUpRooms>();
+        assert_eq!(rooms.0.len(), 2, "one room a pane");
+        let mut worn: Vec<(bool, bool)> = rooms
+            .0
+            .values()
+            .map(|r| (r.worn[4].is_some(), r.worn[0].is_some()))
+            .collect();
+        worn.sort();
+        assert_eq!(
+            worn,
+            vec![(false, true), (true, false)],
+            "the chest on one card, the hood on the other, never both"
+        );
+
+        crate::script_calls::with_hosted_vm(app.world_mut(), |s| {
+            s.expect("a VM").run("b:Hide()").expect("hide one");
+        });
+        app.update();
+        let rooms = app.world().resource::<DressUpRooms>();
+        assert_eq!(rooms.0.len(), 1, "the hidden card's room goes");
+        assert!(
+            rooms.0.values().all(|r| r.worn[4].is_some()),
+            "the shown card keeps its chest"
+        );
     }
 
     /// A bow takes the off lane and clears the main; a crossbow takes the main and clears the off.

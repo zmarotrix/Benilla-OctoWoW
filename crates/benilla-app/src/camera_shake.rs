@@ -165,6 +165,7 @@ impl Plugin for CameraShakePlugin {
                     .in_set(WorldStage::Present)
                     .run_if(not(resource_exists::<crate::run_mode::CaptureMode>)),
             );
+        crate::live_data::loader(app, load_shakes);
     }
 }
 

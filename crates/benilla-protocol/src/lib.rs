@@ -31,8 +31,11 @@ use benilla_srp::{NormalizedString, PublicKey, SrpClientChallenge, SESSION_KEY_L
 
 /// The port a stock vmangos `realmd` listens on.
 pub const AUTH_PORT: u16 = 3724;
-/// The 1.12.1 client build we present to the server.
+/// The 1.12.1 client build we present to the world server (`CMSG_AUTH_SESSION`, `0x5b408c`).
 pub const CLIENT_BUILD: u16 = 5875;
+/// The build the OctoWoW client presents in the logon challenge (`0x5b211e`, `0x1c68`), the one
+/// place its executable departs from 5875; its realmd refuses a 5875 challenge.
+pub const LOGON_BUILD: u16 = 7272;
 /// Challenges [`logon`] draws for an unambiguous `B`; one in ~137 is not, so all 8 fail ~10⁻¹⁷.
 const MAX_CHALLENGE_DIALS: u32 = 8;
 
@@ -367,13 +370,8 @@ pub fn logon_with_pin(
             if dial == 0 {
                 stage(LoginStage::Authenticating);
             }
-            auth::write_logon_challenge(
-                &mut stream,
-                &username.to_uppercase(),
-                CLIENT_BUILD,
-                locale,
-            )
-            .context("sending logon challenge")?;
+            auth::write_logon_challenge(&mut stream, &username.to_uppercase(), LOGON_BUILD, locale)
+                .context("sending logon challenge")?;
             let Some(reply) =
                 auth::read_challenge_reply(&mut stream).context("reading logon challenge reply")?
             else {

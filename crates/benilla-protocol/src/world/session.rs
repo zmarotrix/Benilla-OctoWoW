@@ -74,6 +74,8 @@ pub(super) struct LinkFacts {
     /// The server sent `SMSG_WARDEN_DATA` before the world entry, which was read past
     /// ([`WorldSession::recv`]).
     warden_asked: bool,
+    /// The server's answer to [`WorldSession::request_extensions`]; `None` for a stock server.
+    server_extensions: Option<messages::extensions::Extensions>,
 }
 
 /// What a world connect reports on its way to `SMSG_AUTH_RESPONSE`.
@@ -241,6 +243,7 @@ impl WorldSession {
         // `SMSG_ADDON_INFO` can reach any of the handshake's read loops, so it is caught here.
         match &packet {
             ServerPacket::AddonInfo { records } => self.link.addon_info = Some(records.clone()),
+            ServerPacket::ServerExtensions(ext) => self.link.server_extensions = Some(ext.clone()),
             // Deviation: benilla runs no Warden module and answers nothing, where the reference
             // hands `SMSG_WARDEN_DATA` to the module its connect loads (`0x6ca2f0`, `0x6ca5c0`)
             // and sends that module's answer as `CMSG_WARDEN_DATA` (`0x6ca6a0`). The message is
@@ -253,6 +256,19 @@ impl WorldSession {
             _ => {}
         }
         Ok(packet)
+    }
+
+    /// Open the extension handshake ([`messages::extensions`]): send what this client supports.
+    /// A server that offers extensions answers; the answer is read with the next packets that
+    /// come in ([`Self::server_extensions`]).
+    pub fn request_extensions(&mut self, ours: &messages::extensions::Extensions) -> Result<()> {
+        self.send(messages::extensions::CMSG_EXTENSIONS, &ours.encode())
+            .context("sending the extension handshake")
+    }
+
+    /// What the server offers, once its answer to [`Self::request_extensions`] has been read.
+    pub fn server_extensions(&self) -> Option<&messages::extensions::Extensions> {
+        self.link.server_extensions.as_ref()
     }
 
     /// Whether the server sent `SMSG_WARDEN_DATA` on this link before the world entry, which

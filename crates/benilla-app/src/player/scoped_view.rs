@@ -23,6 +23,40 @@ const SPELL_AURA_FAR_SIGHT: u32 = 76;
 /// `0x50a706`), used only as a denominator.
 const REFERENCE_DEFAULT_DEGREES: f32 = 90.0;
 
+/// SuperWoW's and Vanilla Tweaks' `FoV` CVar, in radians against the reference's own `π/2`
+/// (`[camera+0x40]`), so its default draws our [`CAM_FOVY`].
+pub(crate) const CVAR_FOV: &str = "FoV";
+const FOV_RANGE: std::ops::RangeInclusive<f32> = 0.5..=2.8;
+
+/// `FoV` over the reference's `π/2`: the factor the normal field of view is drawn at. Deviation:
+/// 1.12 has no field-of-view setting.
+#[derive(Resource)]
+pub(crate) struct FovScale(pub(crate) f32);
+
+impl Default for FovScale {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
+/// Mirror `FoV` so the camera never reads the CVar table.
+pub(super) fn sync_fov(cvars: Option<Res<crate::cvars::Cvars>>, mut scale: ResMut<FovScale>) {
+    let Some(cvars) = cvars.as_deref() else {
+        return;
+    };
+    let fov = cvars
+        .get(CVAR_FOV)
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|v| v.is_finite())
+        .map_or(std::f32::consts::FRAC_PI_2, |v| {
+            v.clamp(*FOV_RANGE.start(), *FOV_RANGE.end())
+        });
+    let now = fov / std::f32::consts::FRAC_PI_2;
+    if (scale.0 - now).abs() > f32::EPSILON {
+        scale.0 = now;
+    }
+}
+
 /// The held scope as a fraction of the normal field of view. `None` is no override;
 /// `Some(1.0)` would still lock first person.
 #[derive(Resource, Default)]
@@ -43,6 +77,7 @@ pub(super) fn apply_scoped_view(
     self_q: Query<&ObjectStore, With<SelfPlayer>>,
     spells: Option<Res<Spells>>,
     mut scoped: ResMut<ScopedView>,
+    fov: Option<Res<FovScale>>,
     mut projections: Query<&mut Projection, With<WorldCamera>>,
 ) {
     let catalog = spells.as_ref().map(|s| &s.catalog);
@@ -67,7 +102,12 @@ pub(super) fn apply_scoped_view(
     let Ok(mut projection) = projections.single_mut() else {
         return;
     };
-    let want = CAM_FOVY * scoped.zoom.unwrap_or(1.0);
+    // The vertical angle grows as the reference's horizontal one does: through the tangent.
+    let base = fov.map_or(CAM_FOVY, |s| {
+        let half = (CAM_FOVY * 0.5).tan() * (s.0 * std::f32::consts::FRAC_PI_4).tan();
+        2.0 * half.atan()
+    });
+    let want = base * scoped.zoom.unwrap_or(1.0);
     if let Projection::Perspective(PerspectiveProjection { fov, .. }) = &mut *projection {
         if (*fov - want).abs() > f32::EPSILON {
             *fov = want;

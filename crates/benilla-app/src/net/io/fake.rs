@@ -957,6 +957,7 @@ pub(crate) fn login(cycles: &Cycles, host: &str) {
             host: host.into(),
             locale: benilla_protocol::auth::LOCALE_TAG_EN_US,
             generation: cycles.abandon.load(Ordering::SeqCst),
+            extensions: false,
         })
         .unwrap();
 }

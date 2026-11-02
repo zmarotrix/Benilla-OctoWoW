@@ -106,6 +106,7 @@ pub(crate) struct Attempt<'w> {
     submit: Res<'w, LoginSubmit>,
     abandon: Res<'w, LoginAbandon>,
     pub(crate) realmlist: Res<'w, crate::realmlist::Realmlist>,
+    extensions: Option<Res<'w, crate::server_extensions::Mode>>,
 }
 
 impl Attempt<'_> {
@@ -117,12 +118,20 @@ impl Attempt<'_> {
         self.intent.in_flight = true;
         self.intent.announced = announced;
         self.intent.retry_at = None;
+        let host = self.realmlist.address().to_string();
+        let extensions = self
+            .extensions
+            .as_deref()
+            .copied()
+            .unwrap_or_default()
+            .wanted(&host);
         let _ = self.submit.0.send(LoginRequest {
             user: user.to_string(),
             pass: pass.to_string(),
-            host: self.realmlist.address().to_string(),
+            host,
             locale: crate::ui_script::client_locale().tag(),
             generation: self.abandon.0.load(Ordering::SeqCst),
+            extensions,
         });
     }
 }

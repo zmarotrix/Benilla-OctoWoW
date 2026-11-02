@@ -27,6 +27,41 @@ pub(super) const SWIM_SPEED: f32 = 4.722_222;
 /// fallback role as [`SWIM_SPEED`].
 pub(super) const SWIM_BACK_SPEED: f32 = 2.5;
 
+/// `swimJumpAscends`: with 1, Space held under the surface swims up, as later clients' ascend key
+/// does, and a press breaches only at the rest line, to climb out. Deviation: 1.12 has no ascend:
+/// Space always breaches (`0x7c6230`), and a swimmer rises only by aiming up and swimming forward.
+pub(crate) const CVAR_SWIM_ASCENDS: &str = "swimJumpAscends";
+
+/// [`CVAR_SWIM_ASCENDS`] as the controller reads it, copied out of the CVar table each frame.
+#[derive(Resource, Default)]
+pub(crate) struct SwimAscend(pub(crate) bool);
+
+pub(super) fn sync_swim_ascend(
+    cvars: Option<Res<crate::cvars::Cvars>>,
+    mut ascend: ResMut<SwimAscend>,
+) {
+    let on = cvars
+        .as_deref()
+        .and_then(|c| c.get(CVAR_SWIM_ASCENDS))
+        .is_some_and(|v| v.trim() != "0");
+    if ascend.0 != on {
+        ascend.0 = on;
+    }
+}
+
+/// The pitch an ascent travels at: straight up with no other stroke, else at least this much up.
+pub(super) const ASCEND_PITCH: f32 = std::f32::consts::FRAC_PI_2;
+pub(super) const ASCEND_PITCH_MOVING: f32 = std::f32::consts::FRAC_PI_4;
+
+/// Whether the swimmer's feet are at the rest line, the top cap a rise stops at (within a tenth
+/// of a yard): there a Space press breaches, below it an ascent climbs.
+pub(super) fn at_rest_line(player: &Player, surface_y: Option<f32>) -> bool {
+    match rest_line(player, surface_y) {
+        Some(surface) => player.pos.y >= surface - rest_cap(player.collision_height.0) - 0.1,
+        None => false,
+    }
+}
+
 /// Swim-jump take-off speed (yd/s): `0x7c6230`'s swim seed `0xc1118c48` (-9.096748, down-positive),
 /// about 14% over the land jump's 7.955547.
 const SWIM_JUMP_SPEED: f32 = 9.096_748;
@@ -395,6 +430,7 @@ pub(super) fn drive_step(
     speeds: Option<benilla_protocol::MoveSpeeds>,
     move_speed: &super::MoveSpeed,
     wobble: f32,
+    pitch_floor: Option<f32>,
 ) -> SwimFrame {
     let (swim_fwd, swim_side) = amounts;
     // Drunk and swimming, the pitch wobbles too, by the facing veer's angle × 4.0 each frame
@@ -404,10 +440,12 @@ pub(super) fn drive_step(
         player.mover_pitch = (player.mover_pitch + wobble * super::drunk::SWIM_PITCH_WOBBLE_SCALE)
             .clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
     }
-    let mut pitch = player.mover_pitch;
+    // An ascent ([`SwimAscend`]) raises the travel pitch to its floor; the aim itself stays.
+    let travel_pitch = pitch_floor.map_or(player.mover_pitch, |f| player.mover_pitch.max(f));
+    let mut pitch = travel_pitch;
     // The travel basis (`0x7c5880`): forward is the facing pitched by the swim pitch, strafe stays
-    // level, and there is no vertical input; Space's one swim role is the jump.
-    let (sp, cp) = player.mover_pitch.sin_cos();
+    // level, and there is no vertical input but the ascent's pitch.
+    let (sp, cp) = travel_pitch.sin_cos();
     let fwd_axis = basis.0 * cp + Vec3::Y * sp;
     let v = fwd_axis * swim_fwd + basis.1 * swim_side;
     let dir3 = v.normalize_or_zero();

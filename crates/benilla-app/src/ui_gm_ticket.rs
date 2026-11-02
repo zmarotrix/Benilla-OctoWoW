@@ -488,6 +488,7 @@ impl Plugin for UiGmTicketPlugin {
                     send_gm_reasks.in_set(crate::ui_script::UiDrain),
                 ),
             );
+        crate::live_data::loader(app, load_gm_ticket_dbc);
     }
 }
 

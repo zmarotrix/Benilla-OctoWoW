@@ -1266,6 +1266,10 @@ impl Plugin for CreatureAnimPlugin {
                     .after(drive_animations)
                     .after(crate::aura_visual::drain_aura_procs),
             );
+        crate::live_data::loader(app, load_anim_data);
+        crate::live_data::loader(app, load_blood_tables);
+        crate::live_data::loader(app, load_env_damage_table);
+        crate::live_data::loader(app, load_spell_visuals);
     }
 }
 

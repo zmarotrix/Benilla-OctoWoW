@@ -29,6 +29,7 @@ use crate::player::PlayerPlugin;
 use crate::portrait::PortraitPlugin;
 use crate::quest_markers::QuestMarkersPlugin;
 use crate::sound::SoundPlugin;
+use crate::superwow::SuperWowPlugin;
 use crate::target::TargetPlugin;
 use crate::textinput::TextInputPlugin;
 use crate::transport::TransportPlugin;
@@ -154,6 +155,7 @@ impl PluginGroup for GamePlugins {
             .add(crate::video::VideoPlugin)
             // A CVar knob too, so before CvarPlugin for the same reason.
             .add(crate::realmlist::RealmlistPlugin)
+            .add(crate::time_of_day::TimeOfDayPlugin)
             .add(crate::cvars::CvarPlugin)
             .add(crate::console::ConsolePlugin)
             .add(crate::player_commands::PlayerCommandsPlugin)
@@ -180,6 +182,15 @@ impl PluginGroup for GamePlugins {
             .add(crate::ui_memory::UiMemoryPlugin)
             .add(UiLogoutPlugin)
             .add(UiSocialPlugin)
+            .add(SuperWowPlugin)
+            .add(crate::launcher::LauncherPlugin)
+            .add(crate::own_auras::OwnAurasPlugin)
+            .add(crate::totems::TotemsPlugin)
+            .add(crate::unit_casts::UnitCastsPlugin)
+            .add(crate::immunities::ImmunitiesPlugin)
+            .add(crate::perf_boost::PerfBoostPlugin)
+            .add(crate::combat_timers::CombatTimersPlugin)
+            .add(crate::announcements::AnnouncementsPlugin)
             // After the social session, whose FriendsFrame and ignore list it uses.
             .add(UiGuildPlugin)
             // After the guild session, whose error channel its refusals ride.
@@ -1686,6 +1697,8 @@ pub(crate) mod schedule_tests {
     /// Every one-shot VM consumer not gated on `ingame_ui_up` (read off the schedule) and not a
     /// memo-diffed `fire_event`, keyed `(path under src/, fn)`, with the reason it is safe.
     const EXEMPT: &[(&str, &str, Because, &str)] = &[
+        ("superwow.rs", "fire_lane", Because::Deliberate,
+         "SuperWoW's and nampower's event lane: a lane's firing, run only inside the lanes' drain, which runs with the interface up (`ingame_ui_up`); while it is not, `drop_lane` clears the queue"),
         ("capture/probe_bg.rs", "bg_probe", Because::SelfHealing,
          "the battleground probe: dev-only (`WOW_PROBE_BG`, `cfg(feature = \"dev\")`) so it is not in a player build at all, and its `mem::take` is of its OWN pending-events string, not a queue anything else fills. Its one real VM dependency is the Lua event tap, which self-heals: `EVENT_DRAIN` returns a `<tap-gone>` sentinel when the tap's globals are missing — the case this window causes, since a tap installed in the glue VM is discarded when `mint_entry_vm` builds the interface — and the probe re-installs on the next frame"),
         ("capture/fixtures.rs", "open_character_fixture", Because::Deliberate,

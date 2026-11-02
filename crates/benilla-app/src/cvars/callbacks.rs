@@ -44,6 +44,7 @@ pub(crate) struct CvarCallbacks<'w> {
     realmlist: Option<ResMut<'w, crate::realmlist::Realmlist>>,
     gamma: Option<ResMut<'w, crate::ui_gamma::DisplayGamma>>,
     render_scale: Option<ResMut<'w, crate::world_backdrop::RenderScale>>,
+    time_of_day: Option<ResMut<'w, crate::time_of_day::TimeOfDaySetting>>,
 }
 
 impl CvarCallbacks<'_> {
@@ -122,6 +123,9 @@ impl CvarCallbacks<'_> {
         }
         if let Some(k) = self.render_scale.as_mut() {
             crate::world_backdrop::on_cvar(ev, k.reborrow());
+        }
+        if let Some(k) = self.time_of_day.as_mut() {
+            crate::time_of_day::on_cvar(ev, k.reborrow());
         }
     }
 }

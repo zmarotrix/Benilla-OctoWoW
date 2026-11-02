@@ -664,6 +664,61 @@ fn push(
 }
 
 impl ActionWalk<'_, '_> {
+    /// nampower's `IsSpellUsable` and `IsSpellInRange` for a spell by id at the call: the usable
+    /// walk (`0x6e3d60`) a spell slot runs, against the selection, and `IsActionInRange`'s range
+    /// pre-check against `unit`'s object (the selection's with none). `None` for a spell the file
+    /// lacks.
+    pub(crate) fn spell_now(
+        &self,
+        spell: u32,
+        unit: Option<u64>,
+    ) -> Option<(bool, bool, Option<bool>)> {
+        let sp = self.spells.as_deref()?;
+        let d = sp.catalog.get(spell)?;
+        let (objects, views) = (&self.objects, &self.views);
+        let (spell_mods, own_control, skill_lines) = &self.cast_state;
+        let me_entity = objects.player();
+        let me = me_entity.and_then(|e| views.get(e).ok());
+        let selection = &self.targeting.selection;
+        let target = selection
+            .guid
+            .and_then(|g| objects.entity(g))
+            .filter(|&e| Some(e) != me_entity)
+            .and_then(|e| views.get(e).ok());
+        let (usable, oom) = match me {
+            Some(store) => {
+                let stacks = stack_counts(&store.0, &views.item_objects(objects));
+                let ctx = usable::UsableCtx {
+                    store,
+                    target: selection.guid.zip(target),
+                    rel: self.relations.get(),
+                    cooldowns: &self.cooldowns,
+                    stacks: &stacks,
+                    spell_mods,
+                    control_lost: own_control.as_ref().is_some_and(|c| c.0),
+                    skill_lines: skill_lines.as_deref().map(|s| &s.catalog),
+                    sub_classes: self.sub_classes.as_deref().map(|s| &s.0),
+                };
+                usable::spell_usable(spell, d, sp, &ctx, objects, &self.items)
+            }
+            None => (false, false),
+        };
+        let cast_ctx = match unit {
+            Some(guid) => self.targeting.context_at_guid(guid),
+            None => self.targeting.context(),
+        };
+        let leg = RangeLeg {
+            caster: cast_ctx.range.caster,
+            mods: spell_mods,
+            cast_ctx: &cast_ctx,
+            player: me.is_some(),
+        };
+        let (_, in_range) = range_answers(d, Some(sp), &leg);
+        Some((usable, oom, in_range))
+    }
+}
+
+impl ActionWalk<'_, '_> {
     /// The word the bar holds at the 1-based `action`.
     fn button(&self, action: u32) -> Option<&benilla_protocol::messages::ActionButton> {
         let slot = u8::try_from(action.checked_sub(1)?).ok()?;

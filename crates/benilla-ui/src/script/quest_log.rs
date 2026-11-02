@@ -40,8 +40,9 @@ use super::quest_live;
 use super::Model;
 use crate::strings::{fill, global, Arg};
 
-/// The quest slots, `PLAYER_QUEST_LOG_1_1` on, 12 bytes each (`0x4de73e`).
-pub const QUEST_LOG_SLOTS: usize = 20;
+/// The quest slots, 12 bytes each (`0x4de73e`): the protocol's count, stock and extra, so the one
+/// knob is [`benilla_protocol::messages::PLAYER_QUEST_LOG_EXTRA_SLOTS`].
+pub const QUEST_LOG_SLOTS: usize = benilla_protocol::messages::PLAYER_QUEST_LOG_SLOTS as usize;
 
 /// The slot state byte's complete bit (`test byte [slot+7],1`, `0x4e02a2`).
 const SLOT_COMPLETE: u8 = 0x01;
@@ -2057,7 +2058,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             // a raid mate outside our subgroup, a pet or a stranger answers nil.
             let grouped = super::roster_read::membership(lua, &model.party, unit.guid).party;
             // Held as a player (`0x468460`, typemask `0x10`) and not deactivated (`0x614ea0`, a
-            // state the app's despawn never leaves held), then the 20 slots' ids, stride 12
+            // state the app's despawn never leaves held), then the slots' ids, stride 12
             // (`0x4dfebd`-`0x4dfed7`); a non-player's window is all zero.
             Ok(flag(
                 grouped && unit.has_object && unit.quest_log.iter().any(|s| s[0] == quest_id),
@@ -4040,7 +4041,7 @@ mod tests {
     /// A held unit whose quest-log window holds `ids`, one per slot from the last slot down, so the
     /// scan must reach slot 19.
     fn held(guid: u64, ids: &[u32]) -> crate::script::UnitState {
-        let mut quest_log = [[0; 3]; 20];
+        let mut quest_log = [[0; 3]; QUEST_LOG_SLOTS];
         for (slot, &id) in quest_log.iter_mut().rev().zip(ids) {
             *slot = [id, 0, 0];
         }

@@ -570,6 +570,18 @@ impl Plugin for TerrainPlugin {
                     // furnisher in the same stage writes.
                     .before(crate::model_forms::furnish_model_forms),
             )
+            // A restream drops the tiles ahead of the stream chain, which asks for them again the
+            // same frame.
+            .add_message::<RestreamWorld>()
+            .add_systems(
+                Update,
+                restream_world
+                    .run_if(crate::schedule::world_is_live)
+                    .after(crate::schedule::WorldStage::Net)
+                    .in_set(crate::schedule::WorldStage::Stream)
+                    .before(stream_terrain)
+                    .before(crate::model_forms::furnish_model_forms),
+            )
             // Ungated, so the last world's art drains at character select too.
             .add_systems(Update, scope_placement_art)
             // Ungated, so the density tracker never misses a boot-time config apply; ordered
@@ -1349,6 +1361,45 @@ fn release_world(
     if let Some(p) = progress.as_mut() {
         **p = WorldLoadProgress::default();
     }
+}
+
+/// Ask for every tile in range to be streamed again, with its models and water, off whatever the
+/// chain now holds: a server's streamed content changed the world's files while the client runs.
+/// The map stays; no loading cover rises. Deviation: 1.12.1 never reloads a loaded tile.
+#[derive(Message, Clone, Copy, Debug, Default)]
+pub struct RestreamWorld;
+
+/// [`RestreamWorld`]: [`release_world`]'s drop, keeping the map, so the stream chain asks for the
+/// tiles in range again this frame.
+fn restream_world(
+    mut asks: MessageReader<RestreamWorld>,
+    mut commands: Commands,
+    mut state: ResMut<TerrainStreamer>,
+    mut placements: ResMut<Placements>,
+    mut forms: ResMut<crate::model_forms::ModelForms>,
+    mut activity: ResMut<StreamActivity>,
+    batchers: (
+        ResMut<HullWelds>,
+        ResMut<StaticMerge>,
+        Option<ResMut<crate::static_gx::StaticGx>>,
+    ),
+) {
+    if asks.is_empty() {
+        return;
+    }
+    asks.clear();
+    let (mut welds, mut static_merge, mut staticgx) = batchers;
+    info!("terrain: streaming {} tiles again", state.tiles.len());
+    forms.clear();
+    drop_streamed_world(
+        &mut commands,
+        &mut state,
+        &mut placements,
+        &mut welds,
+        &mut static_merge,
+        staticgx.as_deref_mut(),
+        &mut activity,
+    );
 }
 
 fn despawn_tile_owned(commands: &mut Commands, t: &TileState) {

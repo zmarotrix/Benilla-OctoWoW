@@ -260,14 +260,27 @@ pub(crate) struct TargetUpdate;
 #[derive(Resource)]
 pub(crate) struct ClickConfig {
     pub(crate) deselect_on_click: bool,
+    /// SuperWoW's click-through (`clickThrough`): a dead creature with nothing to loot or skin
+    /// is no pick candidate, so the cursor and the click reach the lootable one behind it.
+    pub(crate) click_through: bool,
 }
 
 impl Default for ClickConfig {
     fn default() -> Self {
         Self {
             deselect_on_click: true,
+            click_through: false,
         }
     }
+}
+
+/// The SuperWoW click-through test: a creature, dead, neither lootable nor skinnable.
+pub(crate) fn clicks_through(store: &ObjectStore) -> bool {
+    let fields = &store.0;
+    fields.object_type() == Some(benilla_protocol::messages::ObjectType::Unit)
+        && fields.unit_health() == Some(0)
+        && !fields.unit_lootable()
+        && fields.unit_flags() & cursor_mode::UNIT_FLAG_SKINNABLE == 0
 }
 
 /// `assistAttack`, 1.12's "Attack on assist" option (`[0xb4d8f8]`, registered at `0x48fc50` with
@@ -284,6 +297,7 @@ pub(crate) fn on_cvar(
 ) {
     match ev.key().as_str() {
         "deselectonclick" => click.deselect_on_click = ev.flag(),
+        "clickthrough" => click.click_through = ev.flag(),
         "assistattack" => assist.0 = ev.flag(),
         _ => {}
     }
@@ -394,6 +408,8 @@ impl Plugin for TargetPlugin {
                 (ring::push_ring, reticle::push_reticle)
                     .after(benilla_world::particles::buffer::begin_effect_frame),
             );
+        crate::live_data::loader(app, ring::load_factions);
+        crate::live_data::loader(app, scan::load_creature_types);
     }
 }
 #[cfg(test)]

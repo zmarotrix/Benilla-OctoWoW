@@ -598,6 +598,18 @@ pub(super) fn install_player_model(lua: &Lua) -> mlua::Result<()> {
         "SetUnit",
         lua.create_function(|lua, (this, unit): (Table, Value)| {
             with_model(lua, &this, |_| ())?;
+            // Deviation: a Lua number is a creature display, shown as the stable's pane shows one
+            // (`0x505cb0`), as OctoWoW's client mods extend `SetUnit` for its shop's previews
+            // (`Turtle_ShopUI.lua`, `model:SetUnit(entry.modelid)`); stock 1.12 stringifies it and
+            // raises `Unknown unit name`. A numeric string still resolves as a token.
+            if let Value::Integer(_) | Value::Number(_) = unit {
+                let display = binding_abi::coerced_number(lua, Some(unit)) as u32;
+                let h = frame_handle_of(lua, &this)?;
+                lua.app_data_mut::<Model>()
+                    .expect("model app_data")
+                    .set_pane_display(h, display);
+                return Ok(());
+            }
             // `lua_isstring` then `lua_tostring` (`0x505dfc`, `0x505e20`).
             let token =
                 optional_string(lua, &unit).ok_or_else(|| mlua::Error::runtime(SET_UNIT_USAGE))?;

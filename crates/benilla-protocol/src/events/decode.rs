@@ -1123,6 +1123,9 @@ pub fn decode(packet: ServerPacket) -> Vec<SessionEvent> {
             opcode,
             unparseable: false,
         }],
+        ServerPacket::ServerExtensions(extensions) => {
+            vec![SessionEvent::ServerExtensions { extensions }]
+        }
         // Handshake-only: `world::session` consumes these before the world loop reaches here.
         ServerPacket::AuthChallenge { .. }
         | ServerPacket::AuthResponse { .. }

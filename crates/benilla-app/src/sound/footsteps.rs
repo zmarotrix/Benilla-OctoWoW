@@ -219,4 +219,5 @@ fn footstep_sounds(
 pub(super) fn plugin(app: &mut App) {
     app.add_systems(Startup, load_footsteps.after(AssetSet::Open))
         .add_systems(Update, footstep_sounds.in_set(WorldStage::Present));
+    crate::live_data::loader(app, load_footsteps);
 }

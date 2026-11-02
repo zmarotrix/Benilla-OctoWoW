@@ -171,6 +171,16 @@ impl LiveQuery for BookNow {
 }
 
 /// The player's book now: the host's, else the VM's copy.
+/// The spell `text` names in the player's or the pet's book, as `CastSpellByName` resolves it
+/// (`0x4b3950`).
+pub(crate) fn named_in_books(lua: &Lua, model: &Model, text: &[u8]) -> Option<NamedSpell> {
+    by_name::resolve_named(
+        &player_book(lua, model),
+        &super::pet::book_now(lua, model),
+        text,
+    )
+}
+
 pub(super) fn player_book<'a>(lua: &Lua, model: &'a Model) -> Cow<'a, SpellBookState> {
     match ask(lua, &BookNow) {
         Some(book) => Cow::Owned(book),
@@ -653,6 +663,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                             ScriptCall::CastSpell {
                                 spell_id,
                                 on_self,
+                                unit: None,
                                 may_cast,
                             }
                         },
@@ -769,7 +780,29 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let name = lua
                 .coerce_string(name)?
                 .ok_or_else(|| mlua::Error::runtime(USAGE_CAST_SPELL_BY_NAME))?;
-            let on_self = bool_or_default(on_self.as_ref(), false);
+            // Deviation: SuperWoW's unit argument. A string the resolver recognises names the unit
+            // the cast binds (`"target"`, `"party1"`, `"mark8"`, a guid); one naming nobody casts
+            // nothing, never at the selection instead. Anything else, `"1"`, `"false"` and `"on"`
+            // among it, is the stock `onSelf`.
+            // SuperWoW's `"CLICK"`: a ground spell goes down at the world point under the mouse.
+            let at_click = matches!(&on_self,
+                Some(Value::String(s)) if s.to_string_lossy().eq_ignore_ascii_case("click"));
+            let unit = match &on_self {
+                _ if at_click => None,
+                Some(Value::String(s)) if super::unit::token_recognised(&s.to_string_lossy()) => {
+                    let token = s.to_string_lossy();
+                    let guid = {
+                        let model = lua.app_data_ref::<Model>().expect("model app_data");
+                        super::unit::guid_of(lua, &model, &token)?
+                    };
+                    match guid.filter(|g| *g != 0) {
+                        Some(guid) => Some(guid),
+                        None => return Ok(()),
+                    }
+                }
+                _ => None,
+            };
+            let on_self = !at_click && unit.is_none() && bool_or_default(on_self.as_ref(), false);
             let found = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 by_name::resolve_named(
@@ -798,11 +831,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Some(found) if !found.passive => ScriptCall::CastSpell {
                     spell_id: found.spell_id,
                     on_self,
+                    unit,
                     may_cast: protected::gate(lua, Tag::CAST),
                 },
                 _ => return Ok(()),
             };
-            super::calls::submit(lua, call)
+            let placed = at_click && matches!(call, ScriptCall::CastSpell { may_cast: true, .. });
+            super::calls::submit(lua, call)?;
+            if placed {
+                super::calls::submit(lua, ScriptCall::SpellTargetCursor)?;
+            }
+            Ok(())
         })?,
     )?;
 
@@ -1910,6 +1949,7 @@ mod tests {
         let cast = |spell_id| ScriptCall::CastSpell {
             spell_id,
             on_self: false,
+            unit: None,
             may_cast: true,
         };
         assert_eq!(

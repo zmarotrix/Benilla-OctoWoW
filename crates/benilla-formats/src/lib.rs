@@ -12,7 +12,7 @@ use benilla_dbc::{DbcParser, FieldType, Schema, SchemaField};
 pub use benilla_blp::BlpTexels;
 
 mod chain;
-pub use chain::{Chain, ChainEntry};
+pub use chain::{chain_name, overlay, record_reads, set_overlay, Chain, ChainEntry};
 /// Loose `.tga` art, as addon folders ship it.
 mod tga;
 pub use tga::{tga_texture_size, tga_to_rgba, TGA_GATE_PREFIX};
@@ -236,13 +236,13 @@ pub use spells::{
     LearnAnnouncement, LearnEffect, OpenLock, RangeTargets, RangeUnit, ShapeshiftForm,
     SpellCastTime, SpellCastTimeCatalog, SpellCatalog, SpellDispelTypes, SpellDisplay,
     SpellDuration, SpellDurationCatalog, SpellMods, SpellRadius, SpellRadiusCatalog, SpellRange,
-    SpellRangeCatalog, TokenContext, TokenNumber, TokenPart, UnitMotion, ATTR_CASTABLE_WHILE_DEAD,
-    ATTR_NOT_IN_COMBAT, ATTR_ONLY_STEALTHED, COMBAT_REACH_ADD, MELEE_RANGE_FLOOR,
-    MOVING_BONUS_FLAGS, MOVING_RANGE_BONUS, ON_NEXT_SWING_RANGE, SPELL_ATTR_IS_TRADESKILL,
-    SPELL_EFFECT_CREATE_ITEM, SPELL_EFFECT_ENCHANT_ITEM, SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY,
-    SPELL_EFFECT_LANGUAGE, SPELL_EFFECT_LEARN_PET_SPELL, SPELL_EFFECT_LEARN_SPELL,
-    SPELL_EFFECT_PROSPECTING, SPELL_EFFECT_SKILL_STEP, SPELL_EFFECT_SKINNING,
-    SPELL_EFFECT_TRADE_SKILL,
+    SpellRangeCatalog, SpellRow, TokenContext, TokenNumber, TokenPart, UnitMotion,
+    ATTR_CASTABLE_WHILE_DEAD, ATTR_NOT_IN_COMBAT, ATTR_ONLY_STEALTHED, COMBAT_REACH_ADD,
+    MELEE_RANGE_FLOOR, MOVING_BONUS_FLAGS, MOVING_RANGE_BONUS, ON_NEXT_SWING_RANGE,
+    SPELL_ATTR_IS_TRADESKILL, SPELL_EFFECT_CREATE_ITEM, SPELL_EFFECT_ENCHANT_ITEM,
+    SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY, SPELL_EFFECT_LANGUAGE, SPELL_EFFECT_LEARN_PET_SPELL,
+    SPELL_EFFECT_LEARN_SPELL, SPELL_EFFECT_PROSPECTING, SPELL_EFFECT_SKILL_STEP,
+    SPELL_EFFECT_SKINNING, SPELL_EFFECT_TRADE_SKILL,
 };
 mod skill_lines;
 pub use skill_lines::{

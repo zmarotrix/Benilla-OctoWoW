@@ -195,10 +195,45 @@ impl super::live::LiveQuery for ActionConsumableNow {
     type Answer = bool;
 }
 
+/// `#showtooltip` (later clients', which smart macros use) on a macro slot: the icon of the spell
+/// named after it, else of the cast the macro is bound to now ([`super::smartmacro`]); `None`
+/// for any other slot, or with no spell to show. Deviation: 1.12 shows the macro's own icon.
+fn showtooltip_icon(lua: &Lua, action: u32) -> Option<String> {
+    let spell = {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let slot = model.actions.get(&action)?;
+        let id = macro_slot_id(slot.kind, slot.action)?;
+        let body = model.macros.by_id(id)?.body.trim_start();
+        let head = body.get(..12)?;
+        if !head.eq_ignore_ascii_case("#showtooltip") {
+            return None;
+        }
+        let named = body[12..].lines().next().unwrap_or("").trim();
+        if named.is_empty() {
+            model.macro_bindings.get(&id).map_or(0, |b| b.spell)
+        } else {
+            super::spellbook::named_in_books(lua, &model, named.as_bytes())
+                .map_or(0, |f| f.spell_id as i32)
+        }
+    };
+    let spell = u32::try_from(spell).ok().filter(|&s| s != 0)?;
+    spell_icon(lua, spell)
+}
+
+/// A spell's icon path through its `Spell.dbc` row's `SpellIconID`, `None` with no row or icon.
+fn spell_icon(lua: &Lua, spell: u32) -> Option<String> {
+    let row = super::live::ask(lua, &super::SpellRowQuery(spell)).flatten()?;
+    let icon = *row.columns.get(117)?;
+    super::live::ask(lua, &super::SpellIconQuery(icon)).flatten()
+}
+
 /// A spell or item slot's icon as the lent host reads it at the call ([`ActionTextureNow`]); a
 /// macro slot's the attack faces of its bound spell ([`ActionAttackFaceNow`]), else its record's;
 /// else the VM's copy of the slot; `None` for an empty slot. The pickup's cursor reads it too.
 pub(super) fn slot_texture(lua: &Lua, action: u32) -> Option<String> {
+    if let Some(icon) = showtooltip_icon(lua, action) {
+        return Some(icon);
+    }
     let (mirror, bound) = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
         let slot = model.actions.get(&action)?;

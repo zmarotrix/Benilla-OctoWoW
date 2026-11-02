@@ -36,6 +36,7 @@ pub(crate) struct UiTalentPlugin;
 impl Plugin for UiTalentPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, load_talents.after(AssetSet::Open));
+        crate::live_data::loader(app, load_talents);
     }
 }
 

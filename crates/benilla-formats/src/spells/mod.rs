@@ -302,7 +302,26 @@ pub struct SpellCatalog {
     dispel_types: SpellDispelTypes,
     /// The weapon-skill spell by weapon subclass ([`weapon_skill_table`]), `0xc4d730`.
     weapon_skills: Vec<u32>,
+    /// Every row's 173 columns as stored and its strings in the client's locale: nampower's
+    /// `GetSpellRec` hands a script any field of any row.
+    rows: HashMap<u32, SpellRow>,
+    /// `SpellIcon.dbc`, id to texture path.
+    icons: HashMap<u32, String>,
 }
+
+/// One `Spell.dbc` row as stored: each column's raw dword (a float's bits, a string's offset),
+/// and the four localized strings in the client's locale.
+#[derive(Clone, Debug, Default)]
+pub struct SpellRow {
+    pub columns: Box<[u32]>,
+    pub name: String,
+    pub rank: String,
+    pub description: String,
+    pub tooltip: String,
+}
+
+/// `ToolTip`'s first locale column.
+const COL_TOOLTIP: usize = 147;
 
 /// The weapon subclasses the weapon-skill table holds: `0x5e2db0` sizes it one past the highest
 /// class-2 subclass in `ItemSubClass.dbc`, 20 (Fishing Pole) at build 5875.
@@ -329,7 +348,28 @@ fn weapon_skill_table(spells: &HashMap<u32, SpellDisplay>) -> Vec<u32> {
     table
 }
 
+/// A column's stored dword whatever its schema type: a float's bits, a string's offset.
+fn raw_dword(r: &benilla_dbc::Record, i: usize) -> u32 {
+    match r.get_value(i) {
+        Some(benilla_dbc::Value::UInt32(v)) => *v,
+        Some(benilla_dbc::Value::Int32(v)) => *v as u32,
+        Some(benilla_dbc::Value::Float32(v)) => v.to_bits(),
+        Some(benilla_dbc::Value::StringRef(benilla_dbc::StringRef(off))) => *off,
+        None => 0,
+    }
+}
+
 impl SpellCatalog {
+    /// `id`'s whole row ([`SpellRow`]); `None` for an id the file lacks.
+    pub fn row(&self, id: u32) -> Option<&SpellRow> {
+        self.rows.get(&id)
+    }
+
+    /// `SpellIcon.dbc`'s texture path for `icon_id`.
+    pub fn icon_path(&self, icon_id: u32) -> Option<&str> {
+        self.icons.get(&icon_id).map(String::as_str)
+    }
+
     /// A catalog from explicit displays, for tests: no learn-spell map and no dispel table, so
     /// [`Self::dispel_name`] is always `None`.
     pub fn from_displays(spells: HashMap<u32, SpellDisplay>) -> Self {
@@ -363,6 +403,8 @@ impl SpellCatalog {
             learn_effects,
             declared_language,
             dispel_types: SpellDispelTypes::default(),
+            rows: HashMap::new(),
+            icons: HashMap::new(),
         }
     }
 
@@ -523,8 +565,20 @@ pub fn load_spell_catalog(chain: &mut Chain) -> Result<SpellCatalog> {
     let mut learned_spell: HashMap<u32, u32> = HashMap::new();
     let mut learn_effects: HashMap<u32, Vec<LearnEffect>> = HashMap::new();
     let mut declared_language: HashMap<u32, u32> = HashMap::new();
+    let mut rows: HashMap<u32, SpellRow> = HashMap::new();
     for r in spells_set.records() {
         let Some(id) = u32_at(r, 0) else { continue };
+        let text = |col| loc_str(&spells_set, r, col, locale).unwrap_or_default();
+        rows.insert(
+            id,
+            SpellRow {
+                columns: (0..SPELL_FIELDS).map(|i| raw_dword(r, i)).collect(),
+                name: text(COL_NAME),
+                rank: text(COL_NAME_SUBTEXT),
+                description: text(COL_DESCRIPTION),
+                tooltip: text(COL_TOOLTIP),
+            },
+        );
         // The learn-spell hop: the first LEARN_SPELL effect's trigger is the taught ability.
         for i in 0..3 {
             if u32_at(r, COL_EFFECT_1 + i) == Some(SPELL_EFFECT_LEARN_SPELL) {
@@ -734,6 +788,8 @@ pub fn load_spell_catalog(chain: &mut Chain) -> Result<SpellCatalog> {
         learn_effects,
         declared_language,
         dispel_types,
+        rows,
+        icons,
     })
 }
 

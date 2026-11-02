@@ -1,0 +1,1209 @@
+<Ui>
+    <!--
+        What OctoWoW's client mods add that the Lua side holds: nampower's cast state, its spell
+        and script queue verbs, its trinket helpers and its version. The engine side
+        (crates/benilla-ui/src/script/nampower.rs) gives the reads; GetNampowerVersion is set
+        last, so an addon that finds it finds every function it guards with it. Deviation: 1.12.1
+        has none of these.
+    -->
+    <Script><![CDATA[
+        -- ══ The cast in progress, as nampower's GetCastInfo reports it ══════════════════════════
+        -- Our own cast's starts and channels (UNIT_CASTEVENT carries the spell, the target and the
+        -- duration), moved by pushback and channel updates, ended by the stock cast events.
+        local cast, castCount = nil, 0
+        local castInfo = {}
+        -- Scripts QueueScript holds until the cast ends.
+        local queued = {}
+        local stopNextTick = false
+
+        local function RunQueued()
+            if cast or table.getn(queued) == 0 then return end
+            table.sort(queued, function(a, b) return a.priority > b.priority end)
+            local run = queued
+            queued = {}
+            for _, q in ipairs(run) do
+                RunScript(q.script)
+            end
+        end
+
+        local function EndCast(castType)
+            if cast and (castType == nil or cast.castType == castType) then
+                cast = nil
+                RunQueued()
+            end
+        end
+
+        local tracker = CreateFrame("Frame", "BenillaNampowerCastTracker")
+        tracker:RegisterEvent("UNIT_CASTEVENT")
+        tracker:RegisterEvent("SPELL_DELAYED_SELF")
+        tracker:RegisterEvent("SPELLCAST_STOP")
+        tracker:RegisterEvent("SPELLCAST_FAILED")
+        tracker:RegisterEvent("SPELLCAST_INTERRUPTED")
+        tracker:RegisterEvent("SPELLCAST_CHANNEL_UPDATE")
+        tracker:RegisterEvent("SPELLCAST_CHANNEL_STOP")
+        tracker:SetScript("OnEvent", function()
+            if event == "UNIT_CASTEVENT" then
+                if arg1 ~= GetUnitGUID("player") then return end
+                if (arg3 == "START" and (arg5 or 0) > 0) or arg3 == "CHANNEL" then
+                    castCount = castCount + 1
+                    local now = GetTime()
+                    cast = {
+                        castId = castCount,
+                        spellId = arg4,
+                        guid = arg2,
+                        castType = arg3 == "CHANNEL" and 3 or 0,
+                        castStartS = now,
+                        castEndS = now + arg5 / 1000,
+                        castDurationMs = arg5,
+                    }
+                elseif arg3 == "FAIL" then
+                    EndCast()
+                end
+            elseif event == "SPELL_DELAYED_SELF" then
+                if cast and cast.castType == 0 then
+                    cast.castEndS = cast.castEndS + (arg2 or 0) / 1000
+                    cast.castDurationMs = cast.castDurationMs + (arg2 or 0)
+                end
+            elseif event == "SPELLCAST_CHANNEL_UPDATE" then
+                if cast and cast.castType == 3 then
+                    cast.castEndS = GetTime() + (arg1 or 0) / 1000
+                end
+            elseif event == "SPELLCAST_CHANNEL_STOP" then
+                EndCast(3)
+            elseif event == "SPELLCAST_STOP" then
+                EndCast(0)
+            else
+                EndCast()
+            end
+        end)
+        tracker:SetScript("OnUpdate", function()
+            if stopNextTick then
+                stopNextTick = false
+                SpellStopCasting()
+            end
+            if cast and GetTime() > cast.castEndS + 1 then
+                EndCast()
+            end
+        end)
+
+        -- GetCastInfo(): the active cast or channel as one reused table, nil with none.
+        function GetCastInfo()
+            if not cast then return nil end
+            local now = GetTime()
+            for k, v in pairs(cast) do castInfo[k] = v end
+            castInfo.castRemainingMs = math.max(0, math.floor((cast.castEndS - now) * 1000))
+            castInfo.gcdEndS = 0
+            castInfo.gcdRemainingMs = 0
+            return castInfo
+        end
+
+        -- GetCurrentCastingInfo(): cast id, visual id, auto-repeat id, casting, channeling,
+        -- on-swing pending, auto-attacking.
+        function GetCurrentCastingInfo()
+            local id = cast and cast.spellId or 0
+            local casting = (cast and cast.castType == 0) and 1 or 0
+            local channeling = (cast and cast.castType == 3) and 1 or 0
+            return casting == 1 and id or 0, id, 0, casting, channeling, 0, 0
+        end
+
+        -- ══ Queueing: the client's own spell queue (NP_SpellQueueWindowMs) ═══════════════════
+        -- Every cast press already queues inside the window; QueueSpellByName is that press.
+        function QueueSpellByName(name, target)
+            CastSpellByName(name, target)
+        end
+
+        -- CastSpellByNameNoQueue: the press as 1.12 makes it, refused while another is in flight.
+        function CastSpellByNameNoQueue(name, target)
+            BenillaSpellQueue("skip")
+            CastSpellByName(name, target)
+            BenillaSpellQueue("unskip")
+        end
+
+        -- QueueScript(script[, priority]): runs once the current cast ends, now with none.
+        function QueueScript(script, priority)
+            table.insert(queued, { script = script, priority = tonumber(priority) or 1 })
+            RunQueued()
+        end
+
+        function ChannelStopCastingNextTick()
+            stopNextTick = true
+        end
+
+        -- GetSpellModifiers(spellId, modType): flat, percent, hasModifier.
+        -- Deviation: the talent modifier tables are not read; no modifier is reported.
+        function GetSpellModifiers(spellId, modType)
+            return 0, 0, 0
+        end
+
+        -- ══ Trinkets ═══════════════════════════════════════════════════════════════════════════
+        -- 1 or 13 and 2 or 14 name the slots; another number an item id, a string a name.
+        local function TrinketSlot(what)
+            if what == 1 or what == 13 then return 13 end
+            if what == 2 or what == 14 then return 14 end
+            for _, slot in ipairs({ 13, 14 }) do
+                local link = GetInventoryItemLink("player", slot)
+                if link then
+                    local _, _, id, name = string.find(link, "item:(%d+).-%[(.-)%]")
+                    if tonumber(what) == tonumber(id)
+                        or (type(what) == "string" and string.lower(what) == string.lower(name or "")) then
+                        return slot
+                    end
+                end
+            end
+        end
+
+        -- GetTrinketCooldown(slot|itemIdOrName): the cooldown table, -1 with no such trinket.
+        function GetTrinketCooldown(what)
+            local slot = TrinketSlot(what)
+            local link = slot and GetInventoryItemLink("player", slot)
+            if not link then return -1 end
+            local _, _, id = string.find(link, "item:(%d+)")
+            return GetItemIdCooldown(tonumber(id))
+        end
+
+        -- UseTrinket(slot|itemIdOrName[, target]): 1 when a trinket was used, else 0.
+        function UseTrinket(what, target)
+            local slot = TrinketSlot(what)
+            if not slot or not GetInventoryItemLink("player", slot) then return 0 end
+            UseInventoryItem(slot)
+            if target and SpellIsTargeting() then SpellTargetUnit(target) end
+            return 1
+        end
+
+        -- ══ nampower's item reads: equipped, bagged and trinket items as tables ═══════════════════
+        local function ItemOf(link)
+            if not link then return nil end
+            local _, _, id, name = string.find(link, "item:(%d+).-%[(.-)%]")
+            return tonumber(id), name
+        end
+
+        -- GetEquippedItems([unit]): [slot] = { itemId, itemName, stackCount } for each worn item,
+        -- slots 1 to 19 as the inventory API numbers them.
+        function GetEquippedItems(unit)
+            unit = unit or "player"
+            local items = {}
+            for slot = 1, 19 do
+                local id, name = ItemOf(GetInventoryItemLink(unit, slot))
+                if id then
+                    items[slot] = { itemId = id, itemName = name,
+                                    stackCount = GetInventoryItemCount(unit, slot) or 1 }
+                end
+            end
+            return items
+        end
+
+        local function BagItems(bag)
+            local items = {}
+            for slot = 1, GetContainerNumSlots(bag) do
+                local id, name = ItemOf(GetContainerItemLink(bag, slot))
+                if id then
+                    local _, count = GetContainerItemInfo(bag, slot)
+                    items[slot] = { itemId = id, itemName = name, stackCount = count or 1 }
+                end
+            end
+            return items
+        end
+
+        -- GetBagItems([bag]): one bag's [slot] = item, or every bag's [bag] = { [slot] = item }.
+        function GetBagItems(bag)
+            if bag then return BagItems(bag) end
+            local bags = {}
+            for b = 0, 4 do bags[b] = BagItems(b) end
+            return bags
+        end
+
+        -- FindPlayerItemSlot(itemIdOrName): bag and slot of the item in the bags, or nil and the
+        -- inventory slot of a worn one; nil when the player has none.
+        function FindPlayerItemSlot(what)
+            local want = tonumber(what)
+            local wantName = type(what) == "string" and string.lower(what) or nil
+            local function Matches(link)
+                local id, name = ItemOf(link)
+                return id and (id == want or (wantName and string.lower(name or "") == wantName))
+            end
+            for b = 0, 4 do
+                for slot = 1, GetContainerNumSlots(b) do
+                    if Matches(GetContainerItemLink(b, slot)) then return b, slot end
+                end
+            end
+            for slot = 1, 19 do
+                if Matches(GetInventoryItemLink("player", slot)) then return nil, slot end
+            end
+            return nil
+        end
+
+        -- UseItemIdOrName(itemIdOrName[, target]): use the item wherever it is; 1 when used.
+        function UseItemIdOrName(what, target)
+            local bag, slot = FindPlayerItemSlot(what)
+            if not slot then return 0 end
+            if bag then UseContainerItem(bag, slot) else UseInventoryItem(slot) end
+            if target and SpellIsTargeting() then SpellTargetUnit(target) end
+            return 1
+        end
+
+        -- GetTrinkets(): the trinkets worn and in the bags, each { itemId, trinketName, texture,
+        -- bagIndex (nil when worn), slotIndex }.
+        function GetTrinkets()
+            local list = {}
+            for _, slot in ipairs({ 13, 14 }) do
+                local id, name = ItemOf(GetInventoryItemLink("player", slot))
+                if id then
+                    table.insert(list, { itemId = id, trinketName = name,
+                        texture = GetInventoryItemTexture("player", slot), slotIndex = slot })
+                end
+            end
+            for b = 0, 4 do
+                for slot = 1, GetContainerNumSlots(b) do
+                    local id, name = ItemOf(GetContainerItemLink(b, slot))
+                    if id then
+                        local _, _, _, _, _, _, _, equipLoc, texture = GetItemInfo(id)
+                        if equipLoc == "INVTYPE_TRINKET" then
+                            table.insert(list, { itemId = id, trinketName = name,
+                                texture = texture, bagIndex = b, slotIndex = slot })
+                        end
+                    end
+                end
+            end
+            return list
+        end
+
+        -- ══ ClassicAPI: its Lua-level backports ═════════════════════════════════════════════════
+        -- What ClassicAPI.dll adds that the 1.12 API already holds the pieces of, each defined
+        -- only where the global is free, so an addon's own polyfill or a later engine verb wins.
+        local function define(name, fn)
+            if getglobal(name) == nil then
+                setglobal(name, fn);
+            end
+        end
+        local function namespace(name)
+            local ns = getglobal(name);
+            if ns == nil then
+                ns = {};
+                setglobal(name, ns);
+            end
+            return ns;
+        end
+        local function put(ns, name, fn)
+            if ns[name] == nil then
+                ns[name] = fn;
+            end
+        end
+
+        -- Strings and tables.
+        define("strsplit", function(sep, text, limit)
+            local out, start, n = {}, 1, 0;
+            if text == nil then return nil; end
+            while true do
+                n = n + 1;
+                if limit and n >= limit then
+                    table.insert(out, string.sub(text, start));
+                    break;
+                end
+                local s, e = string.find(text, "["..sep.."]", start);
+                if not s then
+                    table.insert(out, string.sub(text, start));
+                    break;
+                end
+                table.insert(out, string.sub(text, start, s - 1));
+                start = e + 1;
+            end
+            return unpack(out);
+        end);
+        define("strjoin", function(sep, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12)
+            local parts = { a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12 };
+            local n = 0;
+            for i = 1, 12 do if parts[i] ~= nil then n = i; end end
+            local out = {};
+            for i = 1, n do out[i] = tostring(parts[i] or ""); end
+            return table.concat(out, sep);
+        end);
+        define("strtrim", function(text, chars)
+            local set = chars and ("["..string.gsub(chars, "([%]%^%-])", "%%%1").."]") or "%s";
+            text = string.gsub(text or "", "^"..set.."+", "");
+            text = string.gsub(text, set.."+$", "");
+            return text;
+        end);
+        define("strreplace", function(text, find, repl)
+            local escaped = string.gsub(find, "(%W)", "%%%1");
+            local out, count = string.gsub(text, escaped, (string.gsub(repl, "%%", "%%%%")));
+            return out, count;
+        end);
+        if string.reverse == nil then
+            string.reverse = function(text)
+                local out = {};
+                for i = string.len(text), 1, -1 do table.insert(out, string.sub(text, i, i)); end
+                return table.concat(out);
+            end
+        end
+        if math.modf == nil then
+            math.modf = function(x)
+                local whole = x >= 0 and math.floor(x) or math.ceil(x);
+                return whole, x - whole;
+            end
+        end
+        if table.wipe == nil then
+            table.wipe = function(t)
+                for k in pairs(t) do t[k] = nil; end
+                return t;
+            end
+        end
+        define("wipe", table.wipe);
+        if table.count == nil then
+            table.count = function(t)
+                local n = 0;
+                for _ in pairs(t) do n = n + 1; end
+                return n;
+            end
+        end
+        define("Mixin", function(object, m1, m2, m3, m4, m5, m6, m7, m8)
+            for _, mixin in ipairs({ m1, m2, m3, m4, m5, m6, m7, m8 }) do
+                for k, v in pairs(mixin) do object[k] = v; end
+            end
+            return object;
+        end);
+        define("CreateFromMixins", function(m1, m2, m3, m4, m5, m6, m7, m8)
+            return Mixin({}, m1, m2, m3, m4, m5, m6, m7, m8);
+        end);
+
+        -- The expansion this client is: classic era's first, 1.12.
+        define("ClassicExpansionAtLeast", function(expansion) return (expansion or 0) <= 0; end);
+        define("ClassicExpansionAtMost", function(expansion) return (expansion or 0) >= 0; end);
+
+        -- Timers, off one hidden frame's clock.
+        local timers = {};
+        local clock = CreateFrame("Frame", "BenillaClassicApiTimers");
+        clock:SetScript("OnUpdate", function()
+            local now, i = GetTime(), 1;
+            while timers[i] do
+                local t = timers[i];
+                if t.cancelled then
+                    table.remove(timers, i);
+                elseif now >= t.at then
+                    t.callback(t);
+                    if t.every and not t.cancelled and (not t.left or t.left > 1) then
+                        if t.left then t.left = t.left - 1; end
+                        t.at = now + t.every;
+                        i = i + 1;
+                    else
+                        table.remove(timers, i);
+                    end
+                else
+                    i = i + 1;
+                end
+            end
+        end);
+        local function schedule(delay, callback, every, count)
+            local t = { at = GetTime() + (delay or 0), callback = callback, every = every,
+                        left = count };
+            t.Cancel = function(self) self.cancelled = true; end;
+            t.IsCancelled = function(self) return self.cancelled and true or false; end;
+            table.insert(timers, t);
+            return t;
+        end
+        local timer = namespace("C_Timer");
+        put(timer, "After", function(delay, callback) schedule(delay, callback); end);
+        put(timer, "NewTimer", function(delay, callback) return schedule(delay, callback); end);
+        put(timer, "NewTicker", function(every, callback, count)
+            return schedule(every, callback, every, count);
+        end);
+
+        -- Colours.
+        local color = namespace("C_ColorUtil");
+        local function hex(v) return string.format("%02x", math.floor((v or 0) * 255 + 0.5)); end
+        put(color, "GenerateTextColorCode", function(r, g, b, a)
+            return hex(a or 1)..hex(r)..hex(g)..hex(b);
+        end);
+        put(color, "WrapTextInColorCode", function(text, code)
+            return "|c"..code..text.."|r";
+        end);
+        put(color, "WrapTextInColor", function(text, c)
+            return "|c"..color.GenerateTextColorCode(c.r, c.g, c.b, c.a)..text.."|r";
+        end);
+        put(color, "ConvertRGBToHSV", function(r, g, b)
+            local max, min = math.max(r, g, b), math.min(r, g, b);
+            local d, h = max - min, 0;
+            if d > 0 then
+                if max == r then h = math.mod((g - b) / d, 6);
+                elseif max == g then h = (b - r) / d + 2;
+                else h = (r - g) / d + 4; end
+                h = h * 60;
+                if h < 0 then h = h + 360; end
+            end
+            return h, (max > 0) and d / max or 0, max;
+        end);
+        put(color, "ConvertHSVToRGB", function(h, s, v)
+            local c = v * s;
+            local x = c * (1 - math.abs(math.mod(h / 60, 2) - 1));
+            local m = v - c;
+            local r, g, b;
+            if h < 60 then r, g, b = c, x, 0 elseif h < 120 then r, g, b = x, c, 0
+            elseif h < 180 then r, g, b = 0, c, x elseif h < 240 then r, g, b = 0, x, c
+            elseif h < 300 then r, g, b = x, 0, c else r, g, b = c, 0, x end
+            return r + m, g + m, b + m;
+        end);
+
+        -- Base64 and hex.
+        local encoding = namespace("C_EncodingUtil");
+        local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        put(encoding, "EncodeHex", function(text)
+            return (string.gsub(text, ".", function(c) return string.format("%02x", string.byte(c)); end));
+        end);
+        put(encoding, "DecodeHex", function(text)
+            return (string.gsub(text, "(%x%x)", function(h) return string.char(tonumber(h, 16)); end));
+        end);
+        put(encoding, "EncodeBase64", function(text)
+            local out = {};
+            for i = 1, string.len(text), 3 do
+                local a, b, c = string.byte(text, i), string.byte(text, i + 1),
+                    string.byte(text, i + 2);
+                local n = a * 65536 + (b or 0) * 256 + (c or 0);
+                local chars = {};
+                for k = 3, 0, -1 do
+                    local idx = math.mod(math.floor(n / (64 ^ k)), 64) + 1;
+                    table.insert(chars, string.sub(B64, idx, idx));
+                end
+                if not b then chars[3] = "="; end
+                if not c then chars[4] = "="; end
+                table.insert(out, table.concat(chars));
+            end
+            return table.concat(out);
+        end);
+        put(encoding, "DecodeBase64", function(text)
+            text = string.gsub(text, "[^%w%+/]", "");
+            local out, bits, n = {}, 0, 0;
+            for i = 1, string.len(text) do
+                local v = string.find(B64, string.sub(text, i, i), 1, true) - 1;
+                bits = bits * 64 + v;
+                n = n + 6;
+                if n >= 8 then
+                    n = n - 8;
+                    local byte = math.floor(bits / (2 ^ n));
+                    table.insert(out, string.char(math.mod(byte, 256)));
+                    bits = math.mod(bits, 2 ^ n);
+                end
+            end
+            return table.concat(out);
+        end);
+
+        -- Money.
+        define("GetCoinTextureString", function(copper)
+            copper = math.floor(copper or 0);
+            local g, s, c = math.floor(copper / 10000), math.mod(math.floor(copper / 100), 100),
+                math.mod(copper, 100);
+            local icon = "|TInterface\\MoneyFrame\\UI-%sIcon:0:0:2:0|t";
+            local parts = {};
+            if g > 0 then table.insert(parts, g..string.format(icon, "Gold")); end
+            if s > 0 then table.insert(parts, s..string.format(icon, "Silver")); end
+            if c > 0 or table.getn(parts) == 0 then
+                table.insert(parts, c..string.format(icon, "Copper"));
+            end
+            return table.concat(parts, " ");
+        end);
+
+        -- Units.
+        define("UnitGUID", function(unit) return GetUnitGUID and GetUnitGUID(unit); end);
+        define("UnitPower", function(unit) return UnitMana(unit); end);
+        define("UnitPowerMax", function(unit) return UnitManaMax(unit); end);
+        define("UnitPowerMissing", function(unit) return UnitManaMax(unit) - UnitMana(unit); end);
+        define("UnitHealthMissing", function(unit)
+            return UnitHealthMax(unit) - UnitHealth(unit);
+        end);
+        define("UnitClassBase", function(unit)
+            local _, class, id = UnitClass(unit);
+            return class, id;
+        end);
+        define("UnitRaceBase", function(unit)
+            local _, race = UnitRace(unit);
+            return race;
+        end);
+        define("UnitIsInMyGuild", function(unit)
+            local mine, theirs = GetGuildInfo("player"), GetGuildInfo(unit);
+            return mine ~= nil and mine == theirs;
+        end);
+        define("UnitNameFromGUID", function(guid) return UnitName(guid); end);
+        define("UnitTokenFromGUID", function(guid)
+            local tokens = { "player", "target", "pet", "mouseover", "targettarget" };
+            for i = 1, 4 do table.insert(tokens, "party"..i); table.insert(tokens, "partypet"..i); end
+            for i = 1, 40 do table.insert(tokens, "raid"..i); end
+            for _, t in ipairs(tokens) do
+                if UnitExists(t) and GetUnitGUID(t) == guid then return t; end
+            end
+        end);
+        -- Within 40 yd, UnitXP's ranged meter, as the classic client's UnitInRange.
+        define("UnitInRange", function(unit)
+            if not UnitExists(unit) then return false, false; end
+            local d = UnitXP("distanceBetween", "player", unit);
+            return d ~= nil and d <= 40, d ~= nil;
+        end);
+        define("UnitInLineOfSight", function(unit)
+            return UnitXP("inSight", "player", unit);
+        end);
+        define("UnitDistanceSquared", function(unit)
+            local d = UnitXP("distanceBetween", "player", unit, "Gaussian");
+            if d == nil then return 0, false; end
+            return d * d, true;
+        end);
+
+        -- Items.
+        local function ItemId(link)
+            if type(link) == "number" then return link; end
+            local _, _, id = string.find(link or "", "item:(%d+)");
+            return tonumber(id);
+        end
+        define("GetItemIcon", function(item)
+            local id = ItemId(item);
+            if not id then return nil; end
+            local _, _, _, _, _, _, _, _, texture = GetItemInfo(id);
+            return texture;
+        end);
+        define("GetInventoryItemID", function(unit, slot)
+            return ItemId(GetInventoryItemLink(unit, slot));
+        end);
+        local item = namespace("C_Item");
+        put(item, "GetItemID", function(link) return ItemId(link); end);
+        put(item, "GetItemIcon", function(i) return GetItemIcon(i); end);
+        put(item, "GetItemName", function(i) return (GetItemInfo(ItemId(i) or 0)); end);
+        put(item, "GetItemLink", function(i)
+            local _, link = GetItemInfo(ItemId(i) or 0);
+            return link;
+        end);
+        put(item, "GetItemQuality", function(i)
+            local _, _, quality = GetItemInfo(ItemId(i) or 0);
+            return quality;
+        end);
+        put(item, "GetItemMaxStackSize", function(i)
+            local _, _, _, _, _, _, stack = GetItemInfo(ItemId(i) or 0);
+            return stack;
+        end);
+        put(item, "IsItemDataCached", function(i) return GetItemInfo(ItemId(i) or 0) ~= nil; end);
+        put(item, "RequestLoadItemData", function() end);
+        -- Item sets off ItemSet.dbc: an item's set id, a set's row.
+        put(item, "GetItemSetIDByID", function(i)
+            local id = BenillaItemSet(ItemId(i) or 0);
+            return id;
+        end);
+        put(item, "GetItemSetInfo", function(setID)
+            local id, name, items, bonuses = BenillaItemSet(nil, setID);
+            if not id then return nil; end
+            return { setID = id, name = name, requiredSkill = 0, requiredSkillRank = 0,
+                     items = items, bonuses = bonuses };
+        end);
+        local container = namespace("C_Container");
+        put(container, "GetContainerNumSlots", GetContainerNumSlots);
+        put(container, "GetContainerItemLink", GetContainerItemLink);
+        put(container, "GetContainerItemID", function(bag, slot)
+            return ItemId(GetContainerItemLink(bag, slot));
+        end);
+        put(container, "HasContainerItem", function(bag, slot)
+            return GetContainerItemLink(bag, slot) ~= nil;
+        end);
+        put(container, "GetContainerItemInfo", function(bag, slot)
+            local texture, count, locked, quality, readable = GetContainerItemInfo(bag, slot);
+            if not texture then return nil; end
+            local link = GetContainerItemLink(bag, slot);
+            return { iconFileID = texture, stackCount = count, isLocked = locked and true or false,
+                     quality = quality, isReadable = readable and true or false,
+                     hyperlink = link, itemID = ItemId(link) };
+        end);
+        put(container, "GetContainerNumFreeSlots", function(bag)
+            local free = 0;
+            for slot = 1, GetContainerNumSlots(bag) do
+                if not GetContainerItemLink(bag, slot) then free = free + 1; end
+            end
+            return free, 0;
+        end);
+        put(container, "PickupContainerItem", PickupContainerItem);
+        put(container, "UseContainerItem", UseContainerItem);
+        put(container, "SwapItems", function(fromBag, fromSlot, toBag, toSlot)
+            PickupContainerItem(fromBag, fromSlot);
+            PickupContainerItem(toBag, toSlot);
+        end);
+
+        -- Spells, over SuperWoW's and nampower's reads.
+        define("GetSpellInfo", function(spell)
+            local id = spell;
+            if type(spell) == "string" then
+                id = GetSpellIdForName and GetSpellIdForName(spell) or 0;
+            end
+            if not id or id == 0 or not SpellInfo then return nil; end
+            local name, rank, icon = SpellInfo(id);
+            if not name then return nil; end
+            return name, rank, icon, 0, 0, 0, id;
+        end);
+        define("IsSpellKnown", function(id)
+            local name = GetSpellNameAndRankForId and GetSpellNameAndRankForId(id);
+            if not name then return false; end
+            return GetSpellIdForName(name) ~= 0;
+        end);
+        define("IsPlayerSpell", function(id) return IsSpellKnown(id); end);
+        define("IsUsableSpell", function(spell)
+            if not IsSpellUsable then return nil; end
+            local usable, oom = IsSpellUsable(spell);
+            return usable == 1, oom == 1;
+        end);
+        define("FindSpellBookSlotByID", function(id)
+            local name = GetSpellNameAndRankForId and GetSpellNameAndRankForId(id);
+            if not name then return nil; end
+            local slot, book = GetSpellSlotTypeIdForName(name);
+            if slot == 0 then return nil; end
+            return slot, book;
+        end);
+
+        -- Spell haste in percent off the cast speed factor (0 unhasted, negative slowed).
+        define("UnitSpellHaste", function(unit)
+            local speed = GetUnitField and GetUnitField(unit or "player", "modCastSpeed");
+            if type(speed) ~= "number" or speed <= 0 then return 0; end
+            return (1 / speed - 1) * 100;
+        end);
+
+        -- Loss of control: the spell-school interrupt lockout the client reads off the server's
+        -- cooldown list (Counterspell, Kick, Pummel, Earth Shock).
+        local loc = namespace("C_LossOfControl");
+        put(loc, "GetActiveLossOfControlDataCount", function()
+            local mask = BenillaSchoolLockout();
+            return mask ~= 0 and 1 or 0;
+        end);
+        put(loc, "GetActiveLossOfControlData", function(index)
+            local mask, left = BenillaSchoolLockout();
+            if mask == 0 or index ~= 1 then return nil; end
+            return { locType = "SCHOOL_INTERRUPT", lockoutSchool = mask, timeRemaining = left,
+                     duration = left, displayText = "Interrupted" };
+        end);
+
+        -- Ground spells and items placed at the mouse, no reticle click: the cast or use, then
+        -- the waiting spell bound where the cursor points. Anything else casts as usual.
+        local spellns = namespace("C_Spell");
+        put(spellns, "CastAtCursor", function(spell)
+            if type(spell) == "number" then
+                local name, rank = GetSpellNameAndRankForId(spell);
+                if not name then return; end
+                if rank and rank ~= "" then name = name .. "(" .. rank .. ")"; end
+                spell = name;
+            end
+            CastSpellByName(spell);
+            BenillaTargetAtCursor();
+        end);
+        put(item, "UseAtCursor", function(name)
+            for bag = 0, 4 do
+                for slot = 1, GetContainerNumSlots(bag) do
+                    local link = GetContainerItemLink(bag, slot);
+                    local _, _, itemName = string.find(link or "", "%[(.+)%]");
+                    if itemName == name then
+                        UseContainerItem(bag, slot);
+                        BenillaTargetAtCursor();
+                        return;
+                    end
+                end
+            end
+        end);
+
+        -- The modern cast reads: UnitCastingInfo / UnitChannelInfo (name, text, texture, start and
+        -- end in ms, isTradeSkill, castID, notInterruptible, spellID) for any unit the client
+        -- times, the player's off the cast tracker above, and CastingInfo / ChannelInfo for the
+        -- player. InCombatLockdown is the player's combat state, 1.12 having no secure lockdown.
+        local function CastRow(unit, wantChannel)
+            local spell, startS, endS, id
+            if UnitIsUnit(unit or "player", "player") then
+                if not cast or (cast.castType == 3) ~= wantChannel then return nil end
+                spell, startS, endS, id = cast.spellId, cast.castStartS, cast.castEndS, cast.castId
+            else
+                local s, left, channel = BenillaUnitCast(unit)
+                if not s or channel ~= wantChannel then return nil end
+                spell, startS, endS, id = s, GetTime(), GetTime() + left, 0
+            end
+            local name, _, icon = SpellInfo(spell)
+            if not name then return nil end
+            return name, name, icon, math.floor(startS * 1000), math.floor(endS * 1000), false, id,
+                false, spell
+        end
+        define("UnitCastingInfo", function(unit) return CastRow(unit, false); end);
+        define("UnitChannelInfo", function(unit) return CastRow(unit, true); end);
+        define("CastingInfo", function() return CastRow("player", false); end);
+        define("ChannelInfo", function() return CastRow("player", true); end);
+        define("InCombatLockdown", function() return UnitAffectingCombat("player") and true or false; end);
+
+        -- SuperWoW's UnitMana / UnitManaMax: a second return, the mana a shapeshifted druid keeps
+        -- under rage or energy (UNIT_FIELD_POWER1, which the server keeps sending).
+        do
+            local stockMana, stockManaMax = UnitMana, UnitManaMax
+            local function Mana(unit, field)
+                if UnitPowerType(unit) == 0 then return nil end
+                local _, class = UnitClass(unit)
+                if class ~= "DRUID" then return nil end
+                local v = GetUnitField and GetUnitField(unit, field)
+                return type(v) == "number" and v or nil
+            end
+            function UnitMana(unit)
+                return stockMana(unit), Mana(unit, "power1")
+            end
+            function UnitManaMax(unit)
+                return stockManaMax(unit), Mana(unit, "maxPower1")
+            end
+        end
+
+        -- The minimap's outline, for the addons that place buttons around it: 1.12's is round.
+        define("GetMinimapShape", function() return "ROUND"; end);
+
+        -- Widget methods ClassicAPI adds to every frame type's method table, each only where the
+        -- type has none: the modern size, shown, hook, attribute and enabled verbs.
+        do
+            local sampleParent = CreateFrame("Frame");
+            local frames = {};
+            for _, kind in ipairs({ "Frame", "Button", "CheckButton", "EditBox", "ScrollFrame",
+                                    "StatusBar", "Slider", "Model", "PlayerModel",
+                                    "MessageFrame", "ScrollingMessageFrame", "ColorSelect",
+                                    "GameTooltip", "SimpleHTML", "LootButton", "TaxiRouteFrame",
+                                    "DressUpModel", "TabardModel" }) do
+                local ok, f = pcall(CreateFrame, kind, nil, sampleParent);
+                if ok and f then table.insert(frames, f); end
+            end
+            local regions = { sampleParent:CreateTexture(), sampleParent:CreateFontString() };
+            sampleParent:Hide();
+            local function Methods(object)
+                local mt = getmetatable(object);
+                return mt and type(mt.__index) == "table" and mt.__index or nil;
+            end
+            local function PutAll(methods, list)
+                for name, fn in pairs(list) do
+                    if methods[name] == nil then methods[name] = fn; end
+                end
+            end
+            local sizeVerbs = {
+                SetSize = function(self, w, h) self:SetWidth(w); self:SetHeight(h or w); end,
+                GetSize = function(self) return self:GetWidth(), self:GetHeight(); end,
+                SetShown = function(self, show) if show then self:Show() else self:Hide() end end,
+            };
+            for _, f in ipairs(frames) do
+                local methods = Methods(f);
+                if methods then
+                    PutAll(methods, sizeVerbs);
+                    PutAll(methods, {
+                        -- HookScript(script, fn): fn runs after the handler already set, as
+                        -- fn(self, arg1, ...) with `this` and the arg globals as 1.12 sets them.
+                        HookScript = function(self, script, fn)
+                            local prev = self:GetScript(script);
+                            self:SetScript(script, function()
+                                if prev then prev(); end
+                                fn(this, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+                            end);
+                        end,
+                        SetAttribute = function(self, key, value)
+                            local attrs = rawget(self, "__benillaAttributes");
+                            if not attrs then
+                                attrs = {};
+                                rawset(self, "__benillaAttributes", attrs);
+                            end
+                            attrs[key] = value;
+                        end,
+                        GetAttribute = function(self, key)
+                            local attrs = rawget(self, "__benillaAttributes");
+                            return attrs and attrs[key];
+                        end,
+                        SetEnabled = function(self, on)
+                            if self.Enable and self.Disable then
+                                if on then self:Enable() else self:Disable() end
+                            end
+                        end,
+                    });
+                end
+            end
+            local texture = Methods(regions[1]);
+            if texture then
+                PutAll(texture, sizeVerbs);
+                PutAll(texture, {
+                    SetColorTexture = function(self, r, g, b, a) self:SetTexture(r, g, b, a); end,
+                });
+            end
+            local fontString = Methods(regions[2]);
+            if fontString then
+                PutAll(fontString, sizeVerbs);
+                PutAll(fontString, {
+                    SetFormattedText = function(self, fmt, ...)
+                        self:SetText(string.format(fmt, unpack(arg)));
+                    end,
+                });
+            end
+        end
+
+        local cvar = namespace("C_CVar");
+        put(cvar, "GetCVar", GetCVar);
+        put(cvar, "SetCVar", SetCVar);
+        put(cvar, "GetCVarBool", function(name) return GetCVar(name) == "1"; end);
+
+        -- ══ ClassicAPI's equipment manager: saved gear sets per character ══════════════════════
+        -- Stored in the benillaEquipmentSets CVar (benilla-config), one record per set:
+        -- "realm|character|name|icon|id1,...,id19" (0 an empty slot, -1 ignored), ";" between.
+        local EQUIP_CVAR = "benillaEquipmentSets";
+        local sets;
+        local function Owner()
+            return (GetCVar("realmName") or "") .. "|" .. (UnitName("player") or "");
+        end
+        local function Clean(text)
+            return (string.gsub(tostring(text or ""), "[|;,]", ""));
+        end
+        local function LoadSets()
+            sets = { all = {}, mine = {}, ownerSeen = Owner() };
+            for record in string.gfind(GetCVar(EQUIP_CVAR) or "", "[^;]+") do
+                local _, _, realm, char, name, icon, ids =
+                    string.find(record, "^([^|]*)|([^|]*)|([^|]*)|([^|]*)|(.*)$");
+                if name then
+                    local set = { owner = realm .. "|" .. char, name = name, icon = icon, ids = {} };
+                    local slot = 1;
+                    for id in string.gfind(ids, "[^,]+") do
+                        set.ids[slot] = tonumber(id) or 0;
+                        slot = slot + 1;
+                    end
+                    table.insert(sets.all, set);
+                    if set.owner == sets.ownerSeen then table.insert(sets.mine, set); end
+                end
+            end
+        end
+        local function StoreSets()
+            local records = {};
+            for _, set in ipairs(sets.all) do
+                local ids = {};
+                for slot = 1, 19 do ids[slot] = tostring(set.ids[slot] or 0); end
+                table.insert(records, set.owner .. "|" .. set.name .. "|" .. (set.icon or "")
+                    .. "|" .. table.concat(ids, ","));
+            end
+            SetCVar(EQUIP_CVAR, table.concat(records, ";"));
+            LoadSets();
+        end
+        local function Mine()
+            if not sets or sets.ownerSeen ~= Owner() then LoadSets(); end
+            return sets.mine;
+        end
+        local function LinkId(link)
+            local _, _, id = string.find(link or "", "item:(%d+)");
+            return tonumber(id) or 0;
+        end
+        local function EquippedId(slot)
+            return LinkId(GetInventoryItemLink("player", slot));
+        end
+        -- The bag and slot holding item `want`, if one does.
+        local function InBags(want)
+            for bag = 0, 4 do
+                for bslot = 1, GetContainerNumSlots(bag) do
+                    if LinkId(GetContainerItemLink(bag, bslot)) == want then
+                        return bag, bslot;
+                    end
+                end
+            end
+        end
+        local function Tally(set)
+            local items, equipped, bags, lost, ignored = 0, 0, 0, 0, 0;
+            for slot = 1, 19 do
+                local want = set.ids[slot] or 0;
+                if want == -1 then
+                    ignored = ignored + 1;
+                elseif want > 0 then
+                    items = items + 1;
+                    if EquippedId(slot) == want then
+                        equipped = equipped + 1;
+                    elseif InBags(want) then
+                        bags = bags + 1;
+                    else
+                        lost = lost + 1;
+                    end
+                end
+            end
+            return items, equipped, bags, lost, ignored;
+        end
+        local equipset = namespace("C_EquipmentSet");
+        put(equipset, "GetNumEquipmentSets", function() return table.getn(Mine()); end);
+        put(equipset, "GetEquipmentSetIDs", function()
+            local ids = {};
+            for i = 1, table.getn(Mine()) do ids[i] = i; end
+            return ids;
+        end);
+        put(equipset, "GetEquipmentSetID", function(name)
+            for i, set in ipairs(Mine()) do
+                if set.name == name then return i; end
+            end
+            return nil;
+        end);
+        -- name, icon, setID, isEquipped, numItems, numEquipped, numInInventory, numLost,
+        -- numIgnored. Worn means every piece on, a piece neither worn nor in the bags (banked)
+        -- not counting against it.
+        put(equipset, "GetEquipmentSetInfo", function(id)
+            local set = Mine()[id];
+            if not set then return nil; end
+            local items, equipped, bags, lost, ignored = Tally(set);
+            return set.name, set.icon, id, items > 0 and bags == 0, items, equipped, bags, lost,
+                ignored;
+        end);
+        put(equipset, "GetItemIDs", function(id)
+            local set = Mine()[id];
+            if not set then return nil; end
+            local ids = {};
+            for slot = 1, 19 do ids[slot] = set.ids[slot] or 0; end
+            return ids;
+        end);
+        put(equipset, "CreateEquipmentSet", function(name, icon)
+            Mine();
+            name = Clean(name);
+            if name == "" then return; end
+            local ids = {};
+            for slot = 1, 19 do ids[slot] = EquippedId(slot); end
+            for _, set in ipairs(sets.mine) do
+                if set.name == name then
+                    set.ids = ids;
+                    if icon then set.icon = Clean(icon); end
+                    StoreSets();
+                    return;
+                end
+            end
+            table.insert(sets.all, { owner = Owner(), name = name, icon = Clean(icon), ids = ids });
+            StoreSets();
+        end);
+        put(equipset, "SaveEquipmentSet", function(id, icon)
+            local set = Mine()[id];
+            if not set then return; end
+            for slot = 1, 19 do
+                if set.ids[slot] ~= -1 then set.ids[slot] = EquippedId(slot); end
+            end
+            if icon then set.icon = Clean(icon); end
+            StoreSets();
+        end);
+        put(equipset, "ModifyEquipmentSet", function(id, name, icon)
+            local set = Mine()[id];
+            if not set then return; end
+            if name and Clean(name) ~= "" then set.name = Clean(name); end
+            if icon then set.icon = Clean(icon); end
+            StoreSets();
+        end);
+        put(equipset, "DeleteEquipmentSet", function(id)
+            local set = Mine()[id];
+            if not set then return; end
+            for i, s in ipairs(sets.all) do
+                if s == set then table.remove(sets.all, i); break; end
+            end
+            StoreSets();
+        end);
+        -- UseEquipmentSet(id): each piece not worn goes on from the bags.
+        put(equipset, "UseEquipmentSet", function(id)
+            local set = Mine()[id];
+            if not set or CursorHasItem() then return false; end
+            for slot = 1, 19 do
+                local want = set.ids[slot] or 0;
+                if want > 0 and EquippedId(slot) ~= want then
+                    local bag, bslot = InBags(want);
+                    if bag then
+                        PickupContainerItem(bag, bslot);
+                        EquipCursorItem(slot);
+                    end
+                end
+            end
+            return true;
+        end);
+        put(equipset, "CanUseEquipmentSets", function() return true; end);
+        -- /equipset Name wears a set; /equipsave Name saves what is worn as it.
+        SLASH_BENILLA_EQUIPSET1 = "/equipset";
+        SlashCmdList["BENILLA_EQUIPSET"] = function(msg)
+            msg = strtrim(msg or "");
+            local id = C_EquipmentSet.GetEquipmentSetID(msg);
+            if id then
+                C_EquipmentSet.UseEquipmentSet(id);
+            else
+                DEFAULT_CHAT_FRAME:AddMessage("No equipment set named \"" .. msg .. "\".");
+            end
+        end;
+        SLASH_BENILLA_EQUIPSAVE1 = "/equipsave";
+        SlashCmdList["BENILLA_EQUIPSAVE"] = function(msg)
+            msg = strtrim(msg or "");
+            if msg == "" then return; end
+            C_EquipmentSet.CreateEquipmentSet(msg);
+            DEFAULT_CHAT_FRAME:AddMessage("Equipment set \"" .. msg .. "\" saved.");
+        end;
+
+        -- ══ Smart macros ════════════════════════════════════════════════════════════════════════
+        -- SuperCleveRoidMacros' language, built in: the engine compiles and evaluates each
+        -- argument (crates/benilla-ui/src/script/smartmacro), and these hand it the commands.
+        -- Each command takes its slash spellings; a stock handler it replaces keeps its key.
+        local SMART = {
+            CAST = { "cast", "/cast", "/spell" },
+            USE = { "use", "/use" },
+            TARGET = { "target", "/target", "/tar" },
+            BENILLA_CASTSEQUENCE = { "castsequence", "/castsequence" },
+            BENILLA_CASTPET = { "castpet", "/castpet" },
+            BENILLA_STARTATTACK = { "startattack", "/startattack" },
+            BENILLA_STOPATTACK = { "stopattack", "/stopattack" },
+            BENILLA_STOPCASTING = { "stopcasting", "/stopcasting" },
+            BENILLA_STOPCHANNELING = { "stopchanneling", "/stopchanneling" },
+            BENILLA_UNQUEUE = { "unqueue", "/unqueue" },
+            BENILLA_CLEARTARGET = { "cleartarget", "/cleartarget" },
+            BENILLA_CANCELAURA = { "cancelaura", "/cancelaura", "/unbuff" },
+            BENILLA_UNSHIFT = { "unshift", "/unshift" },
+            BENILLA_STOPMACRO = { "stopmacro", "/stopmacro" },
+            BENILLA_SKIPMACRO = { "skipmacro", "/skipmacro" },
+            BENILLA_FIRSTACTION = { "firstaction", "/firstaction" },
+            BENILLA_NOFIRSTACTION = { "nofirstaction", "/nofirstaction" },
+            BENILLA_PETATTACK = { "petattack", "/petattack" },
+            BENILLA_PETFOLLOW = { "petfollow", "/petfollow" },
+            BENILLA_PETWAIT = { "petwait", "/petwait", "/petstay" },
+            BENILLA_PETPASSIVE = { "petpassive", "/petpassive" },
+            BENILLA_PETDEFENSIVE = { "petdefensive", "/petdefensive" },
+            BENILLA_PETAGGRESSIVE = { "petaggressive", "/petaggressive" },
+            BENILLA_EQUIP = { "equip", "/equip" },
+            BENILLA_EQUIPMH = { "equipmh", "/equipmh" },
+            BENILLA_EQUIPOH = { "equipoh", "/equipoh" },
+            BENILLA_EQUIP11 = { "equip11", "/equip11" },
+            BENILLA_EQUIP12 = { "equip12", "/equip12" },
+            BENILLA_EQUIP13 = { "equip13", "/equip13" },
+            BENILLA_EQUIP14 = { "equip14", "/equip14" },
+            BENILLA_APPLYMAIN = { "applymain", "/applymain" },
+            BENILLA_APPLYOFF = { "applyoff", "/applyoff" },
+            BENILLA_RETARGET = { "retarget", "/retarget" },
+        };
+        for key, def in pairs(SMART) do
+            local cmd = def[1];
+            if not SlashCmdList[key] then
+                for i = 2, table.getn(def) do
+                    setglobal("SLASH_"..key..(i - 1), def[i]);
+                end
+            end
+            SlashCmdList[key] = function(msg)
+                BenillaSmartMacro_Run(cmd, msg);
+            end;
+        end
+
+        -- One line as a macro line runs: through the chat edit box, as EXECUTE_CHAT_LINE does.
+        local function RunLine(line)
+            local box = ChatFrameEditBox or (DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.editBox);
+            if not box then return; end
+            box:SetText(line);
+            ChatEdit_SendText(box);
+        end
+
+        -- A nested `{Name}` macro or `/runmacro Name`: its lines, until a stop.
+        function BenillaSmartMacro_RunByName(name)
+            local index = GetMacroIndexByName(name);
+            if not index or index == 0 then return; end
+            local _, _, body = GetMacroInfo(index);
+            for line in string.gfind(body or "", "[^\r\n]+") do
+                line = string.gsub(line, "^%s+", "");
+                if line ~= "" and string.sub(line, 1, 1) ~= "#" then
+                    RunLine(line);
+                end
+            end
+        end
+        -- `/quickheal [conds]`, `/qh`: QuickHeal's smart heal, where the addon is loaded.
+        SLASH_BENILLA_QUICKHEAL1 = "/quickheal";
+        SLASH_BENILLA_QUICKHEAL2 = "/qh";
+        SlashCmdList["BENILLA_QUICKHEAL"] = function(msg)
+            if QuickHeal and (msg == "" or BenillaSmartMacro_Choose(msg.." x")) then
+                QuickHeal();
+            end
+        end;
+
+        -- A `#showtooltip` macro's tooltip is its spell's, as its icon is: `SetAction` on a macro
+        -- slot whose bound spell resolves shows that spell.
+        local Ref_SetAction = GameTooltip.SetAction;
+        GameTooltip.SetAction = function(self, slot)
+            if GetActionText(slot) and GetActionTexture(slot) then
+                local name, _, body = GetMacroInfo(GetMacroIndexByName(GetActionText(slot)) or 0);
+                if body and string.find(string.lower(body), "^%s*#showtooltip") then
+                    local _, _, arg = string.find(body, "/cast%s+([^\r\n]+)");
+                    local spell = arg and BenillaSmartMacro_Choose(arg);
+                    local slotId, book = spell and GetSpellSlotTypeIdForName
+                        and GetSpellSlotTypeIdForName(spell);
+                    if slotId and slotId ~= 0 then
+                        return self:SetSpell(slotId, book == "pet" and "pet" or "spell");
+                    end
+                end
+            end
+            return Ref_SetAction(self, slot);
+        end;
+
+        SLASH_BENILLA_RUNMACRO1 = "/runmacro";
+        SlashCmdList["BENILLA_RUNMACRO"] = function(msg)
+            BenillaSmartMacro_RunByName(strtrim(msg));
+        end;
+        if not SlashCmdList["RELOAD"] then
+            SLASH_BENILLA_RL1 = "/rl";
+            SlashCmdList["BENILLA_RL"] = function() ReloadUI(); end;
+        end
+
+        -- `/macrocheck [all|name]`: the condition names a macro's lines use that the grammar
+        -- does not know.
+        SLASH_BENILLA_MACROCHECK1 = "/macrocheck";
+        SlashCmdList["BENILLA_MACROCHECK"] = function(msg)
+            local found = 0;
+            for i = 1, 36 do
+                local name, _, body = GetMacroInfo(i);
+                if name and (msg == "" or msg == "all" or string.lower(msg) == string.lower(name)) then
+                    for line in string.gfind(body or "", "[^\r\n]+") do
+                        local _, _, arg = string.find(line, "^%s*/%a+%s+(.*)$");
+                        local bad = arg and BenillaSmartMacro_Check(arg) or "";
+                        if bad ~= "" then
+                            found = found + 1;
+                            DEFAULT_CHAT_FRAME:AddMessage("|cffff9900"..name..":|r unknown "..bad);
+                        end
+                    end
+                end
+            end
+            if found == 0 then
+                DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99Macros:|r no unknown conditions.");
+            end
+        end;
+
+        -- What the engine keeps no copy of, read off the addons that track it where loaded.
+        function BenillaSmartMacro_Fact(name, unit, raw, action)
+            if name == "istank" then
+                return pfUI and pfUI.uf and pfUI.uf.raid and pfUI.uf.raid.tankrole
+                    and pfUI.uf.raid.tankrole[UnitName(unit) or ""] and true or false;
+            elseif name == "threat" and TWT and TWT.threats then
+                local t = TWT.threats[UnitName("player") or ""];
+                return t and t.perc ~= nil and true or false;
+            elseif name == "equipset" then
+                -- [equipset:Raid/PvP]: any of the named sets worn.
+                for set in string.gfind(raw or "", "[^/]+") do
+                    local id = C_EquipmentSet.GetEquipmentSetID((string.gsub(set, "_", " ")))
+                        or C_EquipmentSet.GetEquipmentSetID(set);
+                    if id then
+                        local _, _, _, worn = C_EquipmentSet.GetEquipmentSetInfo(id);
+                        if worn then return true; end
+                    end
+                end
+                return false;
+            elseif name == "resisted" then
+                return false;
+            end
+            return false;
+        end
+
+        -- The live re-derivation: each smart macro's bound spell follows its conditions, ten
+        -- times a second, and the bar redraws a slot whose spell moved.
+        local rederive = CreateFrame("Frame", "BenillaSmartMacroDriver");
+        rederive.wait = 0;
+        rederive:SetScript("OnUpdate", function()
+            -- A unit frame under the cursor is the mouseover, whichever addon drew it: the
+            -- hovered frame or a parent carrying a `unit`. Every frame, so a hover is current.
+            local focus = GetMouseFocus and GetMouseFocus();
+            local unit;
+            while focus and not unit do
+                local u = focus.unit;
+                if type(u) ~= "string" and focus.GetAttribute then
+                    u = focus:GetAttribute("unit");
+                end
+                if type(u) == "string" and u ~= "" then unit = u; end
+                focus = focus.GetParent and focus:GetParent();
+            end
+            if unit ~= this.hovered then
+                this.hovered = unit;
+                if SetMouseoverUnit then SetMouseoverUnit(unit); end
+            end
+
+            this.wait = this.wait - arg1;
+            if this.wait > 0 then return; end
+            this.wait = 0.1;
+            BenillaSmartMacro_Rederive();
+        end);
+
+        -- ══ Detection, last ════════════════════════════════════════════════════════════════════
+        -- The version OctoWoW ships, whose API the functions above and the engine's give.
+        function GetNampowerVersion()
+            return 4, 6, 1
+        end
+    ]]></Script>
+</Ui>

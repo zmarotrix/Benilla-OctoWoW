@@ -1,5 +1,5 @@
 //! The 1.12 surface as a gate: every global the engine puts in a bare VM is one the 1.12.1 client
-//! has (`reference/lua_globals.tsv`) or a commented entry on [`BEYOND_1_12`], since addons branch
+//! has (`reference/lua_globals.tsv`) or an entry of [`beyond_1_12`], since addons branch
 //! on a global's presence; no prefix excuses an engine name, as a host seam belongs in Rust. The
 //! production load, core and layer, is `benilla-app`'s `ui_script::surface_gate`; what 1.12 has
 //! and benilla lacks is `scripts/api-coverage.sh`'s count.
@@ -9,7 +9,19 @@ use std::collections::HashSet;
 use super::common::script;
 
 /// Globals the engine exposes that 1.12 does not, each with its reason. The list is exact.
-const BEYOND_1_12: &[&str] = &[];
+/// OctoWoW's client mods: SuperWoW's globals, which its interface and addons test for
+/// ([`crate::script::superwow`]).
+fn beyond_1_12() -> Vec<&'static str> {
+    crate::script::superwow::SHARED_GLOBALS
+        .iter()
+        .map(|(name, _)| *name)
+        .chain(crate::script::superwow::IN_GAME_GLOBALS.iter().copied())
+        .chain(crate::script::nampower::IN_GAME_GLOBALS.iter().copied())
+        // Smart macros' engine entry points, which the layer's slash commands call.
+        .chain(crate::script::smartmacro::IN_GAME_GLOBALS.iter().copied())
+        .chain(crate::script::modstate::IN_GAME_GLOBALS.iter().copied())
+        .collect()
+}
 
 /// `reference/lua_globals.tsv`'s names.
 fn reference() -> HashSet<String> {
@@ -50,14 +62,14 @@ fn the_engine_adds_no_global_past_1_12() {
     let known = reference();
     let mut beyond: Vec<String> = engine_globals()
         .into_iter()
-        .filter(|n| !known.contains(n) && !BEYOND_1_12.contains(&n.as_str()))
+        .filter(|n| !known.contains(n) && !beyond_1_12().contains(&n.as_str()))
         .collect();
     beyond.sort_unstable();
     assert!(
         beyond.is_empty(),
         "the engine exposes {} global(s) the 1.12.1 client does not:\n    {}\n\n\
          1.12 is the target. Give it its 1.12 spelling, move a host seam into Rust, or add it to \
-         `BEYOND_1_12` in this file WITH the reason it has to stay — an addon that \
+         `beyond_1_12` in this file WITH the reason it has to stay — an addon that \
          feature-detects an unexplained superset takes a path we cannot honour.",
         beyond.len(),
         beyond.join(" ")
@@ -69,9 +81,8 @@ fn the_engine_adds_no_global_past_1_12() {
 fn the_exception_list_is_exact() {
     let known = reference();
     let ours = engine_globals();
-    let wrong: Vec<&str> = BEYOND_1_12
-        .iter()
-        .copied()
+    let wrong: Vec<&str> = beyond_1_12()
+        .into_iter()
         .filter(|n| known.contains(*n) || !ours.contains(*n))
         .collect();
     assert!(

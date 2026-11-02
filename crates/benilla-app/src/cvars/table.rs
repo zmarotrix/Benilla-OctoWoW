@@ -155,6 +155,24 @@ const fn ours(name: &'static str, default: &'static str, why: &'static str) -> R
     }
 }
 
+/// One of nampower's settings, at its own default (OctoWoW's client mods; `crate::nampower`).
+const fn perf_boost(name: &'static str, default: &'static str) -> Registered {
+    ours(
+        name,
+        default,
+        "perf_boost's setting, which OctoWoW's client mods add and its PerfBoostSettings addon \
+         reads and writes",
+    )
+}
+
+const fn nampower(name: &'static str, default: &'static str) -> Registered {
+    ours(
+        name,
+        default,
+        "nampower's setting, which OctoWoW's client mods add and its addons read and write",
+    )
+}
+
 /// The table as the script VM's registrar wants it: `(name, default)` pairs in table order.
 pub(crate) fn registered_pairs() -> impl Iterator<Item = (&'static str, &'static str)> {
     let locale = crate::ui_script::client_locale().index();
@@ -373,6 +391,147 @@ pub(crate) const REGISTERED: &[Registered] = &[
     )
     .checked(benilla_ui::script::check_camera_yaw),
     same("mouseInvertPitch", "0"),
+    ours(
+        crate::time_of_day::CVAR_MODE,
+        "0",
+        "1.12 draws the server's time of day alone; 0 (server) IS that, and 1 (local) and 2 \
+         (static) are a visual-only choice the player makes",
+    ),
+    ours(
+        crate::time_of_day::CVAR_STATIC,
+        "720",
+        "the static time-of-day mode's minute, read only in that mode; noon",
+    ),
+    ours(
+        "detailDistanceScale",
+        "1",
+        "benilla's detail distance: small doodads' fade bands pushed out by this factor, 1 to 4; \
+         1 is 1.12's bands",
+    ),
+    ours(
+        crate::player::CVAR_SWIM_ASCENDS,
+        "1",
+        "later clients' ascend key, which OctoWoW players asked for: 1.12's Space always jumps          from the water; 1 swims up while it is held under the surface, 0 keeps the jump",
+    ),
+    ours(
+        crate::ui_auction::CVAR_FAST_QUERIES,
+        "1",
+        "AuctionQueryThrottle's behaviour, which OctoWoW players add: 1.12 holds the next browse          query five seconds; 1 opens it as the server's answer lands, 0 keeps the five seconds",
+    ),
+    ours(
+        crate::video::CVAR_MAX_FPS,
+        "0",
+        "benilla's frame-rate cap in the foreground, UnitXP SP3's FPScap: 0 is none",
+    ),
+    ours(
+        crate::video::CVAR_MAX_FPS_BACKGROUND,
+        "30",
+        "benilla's frame-rate cap while the window is in the background, UnitXP SP3's \
+         backgroundFPScap: 0 is none",
+    ),
+    ours(
+        "FoV",
+        "1.5708",
+        "SuperWoW's and Vanilla Tweaks' field of view in radians, the reference's pi/2 its \
+         default: the world camera's angle widens or narrows with it",
+    ),
+    ours(
+        "benillaEquipmentSets",
+        "",
+        "ClassicAPI's equipment manager, which OctoWoW's addons and smart macros use: every          character's saved sets, which the layer's `C_EquipmentSet` reads and writes",
+    ),
+    // perf_boost's settings: every render limit off (-1), as it ships.
+    perf_boost("PB_Enabled", "1"),
+    perf_boost("PB_ShowAllPlayers", "0"),
+    perf_boost("PB_HideAllPlayers", "0"),
+    perf_boost("PB_AlwaysRenderRaidMarks", "1"),
+    perf_boost("PB_AlwaysRenderPVP", "0"),
+    perf_boost("PB_AlwaysRenderPlayersWithAggro", "0"),
+    perf_boost("PB_AlwaysRenderPlayers", ""),
+    perf_boost("PB_NeverRenderPlayers", ""),
+    perf_boost("PB_PlayerRenderDist", "-1"),
+    perf_boost("PB_PlayerRenderDistInCombat", "-1"),
+    perf_boost("PB_PlayerRenderDistInCities", "-1"),
+    perf_boost("PB_TrashUnitRenderDist", "-1"),
+    perf_boost("PB_TrashUnitRenderDistInCombat", "-1"),
+    perf_boost("PB_PetRenderDist", "-1"),
+    perf_boost("PB_PetRenderDistInCombat", "-1"),
+    perf_boost("PB_SummonRenderDist", "-1"),
+    perf_boost("PB_SummonRenderDistInCombat", "-1"),
+    perf_boost("PB_CorpseRenderDist", "-1"),
+    perf_boost("PB_DoodadRenderDist", "-1"),
+    perf_boost("PB_DoodadRenderDistInCitiesAndRaids", "-1"),
+    perf_boost("PB_ShowPlayerSpellVisuals", "1"),
+    perf_boost("PB_ShowPlayerGroundEffects", "1"),
+    perf_boost("PB_ShowPlayerAuraVisuals", "1"),
+    perf_boost("PB_ShowUnitAuraVisuals", "1"),
+    perf_boost("PB_HideSpellsForHiddenPlayers", "1"),
+    perf_boost("PB_HideLaggyBossSpellsOnOthers", "0"),
+    perf_boost("PB_HiddenSpellIds", ""),
+    perf_boost("PB_AlwaysShownSpellIds", ""),
+    perf_boost("PB_ApplyHiddenSpellIdsToMe", "0"),
+    perf_boost("PB_DebugShownSpells", "0"),
+    // nampower's settings, at its defaults (its `README.md`).
+    nampower("NP_QueueCastTimeSpells", "1"),
+    nampower("NP_QueueInstantSpells", "1"),
+    nampower("NP_QueueChannelingSpells", "1"),
+    nampower("NP_QueueTargetingSpells", "1"),
+    nampower("NP_QueueOnSwingSpells", "0"),
+    nampower("NP_QueueSpellsOnCooldown", "1"),
+    nampower("NP_InterruptChannelsOutsideQueueWindow", "0"),
+    nampower("NP_SpellQueueWindowMs", "500"),
+    nampower("NP_OnSwingBufferCooldownMs", "500"),
+    nampower("NP_ChannelQueueWindowMs", "1500"),
+    nampower("NP_TargetingQueueWindowMs", "500"),
+    nampower("NP_CooldownQueueWindowMs", "250"),
+    nampower("NP_MinBufferTimeMs", "55"),
+    nampower("NP_NonGcdBufferTimeMs", "100"),
+    nampower("NP_MaxBufferIncreaseMs", "30"),
+    nampower("NP_RetryServerRejectedSpells", "1"),
+    nampower("NP_QuickcastTargetingSpells", "0"),
+    nampower("NP_QuickcastOnDoubleCast", "0"),
+    nampower("NP_ReplaceMatchingNonGcdCategory", "0"),
+    nampower("NP_OptimizeBufferUsingPacketTimings", "0"),
+    nampower("NP_PreventRightClickTargetChange", "0"),
+    nampower("NP_PreventRightClickPvPAttack", "0"),
+    nampower("NP_DoubleCastToEndChannelEarly", "0"),
+    nampower("NP_SpamProtectionEnabled", "1"),
+    nampower("NP_PreserveGreaterDemonAutocast", "1"),
+    nampower("NP_FelguardAutocastData", ""),
+    nampower("NP_DoomguardAutocastData", ""),
+    nampower("NP_InfernalAutocastData", ""),
+    nampower("NP_PreventMountingWhenBuffCapped", "1"),
+    nampower("NP_EnableAuraCastEvents", "0"),
+    nampower("NP_EnableAutoAttackEvents", "0"),
+    nampower("NP_EnableSpellStartEvents", "0"),
+    nampower("NP_EnableSpellGoEvents", "0"),
+    nampower("NP_EnableSpellHealEvents", "0"),
+    nampower("NP_EnableSpellEnergizeEvents", "0"),
+    nampower("NP_EnableEnhancedTooltips", "1"),
+    nampower("NP_EnableLocalSetRaidTarget", "1"),
+    nampower("NP_EnableUnitEventsPet", "1"),
+    nampower("NP_EnableUnitEventsParty", "1"),
+    nampower("NP_EnableUnitEventsRaid", "1"),
+    nampower("NP_EnableUnitEventsMouseover", "1"),
+    nampower("NP_EnableUnitEventsGuid", "1"),
+    nampower("NP_EnableUnitEventsGuidFiltering", "1"),
+    nampower("NP_ChannelLatencyReductionPercentage", "75"),
+    nampower("NP_NameplateDistance", "20"),
+    nampower("NP_ChatBubbleDistance", "60"),
+    nampower("NP_ChatBubblesWhisper", "0"),
+    nampower("NP_ChatBubblesRaid", "0"),
+    nampower("NP_ChatBubblesBattleground", "0"),
+    ours(
+        "serverExtensions",
+        "auto",
+        "1.12 has no extension handshake; auto opens benilla's only with a server on this \
+         machine or a private network, so a public server sees what a stock client sends",
+    ),
+    ours(
+        "clickThrough",
+        "0",
+        "1.12 has no click-through; OFF is the reference's own picking, and ON is SuperWoW's",
+    ),
     ours(
         "autoLootDefault",
         "0",
@@ -698,8 +857,8 @@ pub(crate) const REGISTERED: &[Registered] = &[
     // `baseMip` (`0x6887aa`, "0", flags 1, callback `0x689090`, record `[0xc7f2f0]`), behind
     // `Get/SetBaseMip` as `1 − level`: the callback refuses outside [0, 1] ("BaseMip must be 0 or
     // 1") and sets the device's first uploaded mip level (`0x589bf0`, read at `0x59f6d1`, on
-    // Direct3D `0x5a08fc`). benilla uploads every level; the write is kept and has no effect.
-    // `hwDetect` leaves it at 0.
+    // Direct3D `0x5a08fc`). Here 1 uploads the world's textures from their second level, latched
+    // at boot as there ([`benilla_assets::publish_base_mip`]). `hwDetect` leaves it at 0.
     same("baseMip", "0").checked(benilla_ui::script::check_base_mip),
     // `spellEffectLevel` (`0x688900`: name `0x869324`, default `0x843068` "2", flags 1, callback
     // `0x689510`, record `[0xc7f2a4]`), the Spell Detail slider (`OptionsFrame.lua:32`). The

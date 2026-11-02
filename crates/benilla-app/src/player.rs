@@ -129,7 +129,7 @@ use state::{
 };
 /// The swim boundary `0.75·h`, also the wade ceiling, for the creature swim marker and the
 /// footstep splash, which have no `Player`.
-pub(crate) use swim::{may_swim, swim_enter_depth};
+pub(crate) use swim::{may_swim, swim_enter_depth, CVAR_SWIM_ASCENDS};
 /// The camera's followed unit when not our body; [`crate::camera_shake`] takes its body frame and
 /// two suspend gates from it, as the reference does from `[cam+0x88]`.
 pub(crate) use view_subject::{FarSight, ViewSubject};
@@ -291,6 +291,8 @@ pub(crate) struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         net::register(app);
+        app.init_resource::<swim::SwimAscend>()
+            .add_systems(PreUpdate, swim::sync_swim_ascend);
         follow::plugin(app);
         approach::plugin(app);
         camera_clip::plugin(app);
@@ -338,6 +340,8 @@ impl Plugin for PlayerPlugin {
         app.init_resource::<view_subject::ViewSubject>()
             .init_resource::<view_subject::FarSight>()
             .init_resource::<scoped_view::ScopedView>()
+            .init_resource::<scoped_view::FovScale>()
+            .add_systems(PreUpdate, scoped_view::sync_fov)
             .add_systems(
                 Update,
                 (

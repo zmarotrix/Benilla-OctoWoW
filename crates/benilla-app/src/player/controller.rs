@@ -260,6 +260,8 @@ pub(super) fn control(
         Res<benilla_world::view::ViewDistance>,
         // Whether the live view is customised, the auto-return's view gate (`0x50fc30`).
         Option<Res<camera_view::CameraViews>>,
+        // Whether Space held under water swims up ([`swim::SwimAscend`]).
+        Option<Res<swim::SwimAscend>>,
     ),
     mut net: (
         Res<NetCommands>,
@@ -761,7 +763,18 @@ pub(super) fn control(
 
         // A knockback sets FALLING, which excludes SWIMMING; it brings its own launch, so the land
         // mover flies it, not `breach_step`.
-        let breach = swimming && (want_jump && !player.modes.hover || wire_jump);
+        // With the ascend setting, Space held below the rest line swims up instead; a press at
+        // the rest line still breaches, to climb out ([`swim::SwimAscend`]).
+        let ascend_on = pointer.7.as_deref().is_some_and(|a| a.0);
+        let below = !swim::at_rest_line(&player, surface_y);
+        let ascend = swimming
+            && ascend_on
+            && below
+            && binds.pressed(crate::bindings::Input::Jump)
+            && may_translate
+            && !player.modes.hover;
+        let breach =
+            swimming && (want_jump && !player.modes.hover && !(ascend_on && below) || wire_jump);
         let knock_breach = swimming && knock_launch.is_some();
         if breach || knock_breach {
             player.swimming = false;
@@ -769,11 +782,21 @@ pub(super) fn control(
         let swimming = swimming && !breach && !knock_breach;
 
         // Read by both the swim mover and the flag build, so the two cannot disagree.
-        let (swim_fwd, swim_side) = if swimming {
+        let (mut swim_fwd, swim_side) = if swimming {
             swim::translate_amounts(&axes, !may_translate)
         } else {
             (0.0, 0.0)
         };
+        // An ascent travels forward pitched up, as a 1.12 swimmer climbing is on the wire: straight
+        // up with no other stroke (forward at 90°), else at least 45° up.
+        let ascend_pitch = (ascend && swimming).then(|| {
+            if swim_fwd > 0.0 {
+                swim::ASCEND_PITCH_MOVING
+            } else {
+                swim_fwd = 1.0;
+                swim::ASCEND_PITCH
+            }
+        });
 
         // The pitch keys: the input tick's pitch emitter (`0x515010`, behind `0x514755` and the
         // swim test `0x514766`), then the mover's pitch at the pitch rate (`0x7c4f80`), before
@@ -860,6 +883,7 @@ pub(super) fn control(
                 mover_speeds,
                 move_speed,
                 if translating { drunk_wobble } else { 0.0 },
+                ascend_pitch,
             );
             swim_pitch = frame.pitch;
             frame.outcome

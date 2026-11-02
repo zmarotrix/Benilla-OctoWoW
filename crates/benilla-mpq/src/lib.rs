@@ -1,6 +1,6 @@
 //! A read-only MPQ reader for the 1.12.1 `Data/` chain: format V1/V2, every file stored whole or
-//! `COMPRESS`-flagged and sectored, no encrypted or single-unit files, no PTCH patches. Anything
-//! else is a hard error.
+//! `COMPRESS`-flagged and sectored, plain or encrypted (with or without `FIX_KEY`), no single-unit
+//! files, no PTCH patches. Anything else is a hard error.
 //!
 //! The patch archives carry delete markers (flag `0x02000000`, size 0): the path is deleted from
 //! the composite chain. [`Archive::contains`] reports one present and [`Archive::read_file`]
@@ -20,7 +20,7 @@ use std::sync::Arc;
 use benilla_bytes::{capped, ByteExt};
 
 mod crypto;
-use crypto::{decrypt_block, hash_string, hash_type};
+use crypto::{decrypt_block, decrypt_bytes, file_key, hash_string, hash_type};
 
 /// `MPQ\x1A` as a little-endian `u32`: the archive header signature.
 const SIGNATURE: u32 = 0x1A51_504D;
@@ -30,6 +30,8 @@ const USERDATA_SIGNATURE: u32 = 0x1B51_504D;
 const FLAG_IMPLODE: u32 = 0x0000_0100;
 const FLAG_COMPRESS: u32 = 0x0000_0200;
 const FLAG_ENCRYPTED: u32 = 0x0001_0000;
+/// The encryption key is offset by the block position and xored with the size ([`file_key`]).
+const FLAG_FIX_KEY: u32 = 0x0002_0000;
 const FLAG_SINGLE_UNIT: u32 = 0x0100_0000;
 /// A patch archive's delete marker (size 0): the path is deleted from the composite chain.
 const FLAG_DELETE_MARKER: u32 = 0x0200_0000;
@@ -51,6 +53,8 @@ struct HashEntry {
 #[derive(Clone, Copy)]
 struct BlockEntry {
     file_pos: u32,
+    /// The bytes the file takes in the archive, compressed or not.
+    stored_size: u32,
     file_size: u32,
     flags: u32,
 }
@@ -185,6 +189,11 @@ impl Archive {
         self.index.find(name).map(|b| b.file_size)
     }
 
+    /// The bytes `name` takes in the archive, compressed or not, from the block table.
+    pub fn stored_size(&self, name: &str) -> Option<u32> {
+        self.index.find(name).map(|b| b.stored_size)
+    }
+
     /// Whether `name` is a delete marker: a chain walker stops there instead of falling through.
     pub fn is_delete_marker(&self, name: &str) -> bool {
         self.index
@@ -218,9 +227,6 @@ impl Archive {
             return Err(Error::NotFound(name.into()));
         }
         // Outside the 1.12.1 envelope: refuse rather than guess.
-        if block.flags & FLAG_ENCRYPTED != 0 {
-            return Err(Error::Unsupported(format!("encrypted file {name}")));
-        }
         if block.flags & FLAG_SINGLE_UNIT != 0 {
             return Err(Error::Unsupported(format!("single-unit file {name}")));
         }
@@ -230,6 +236,14 @@ impl Archive {
         let file_size = block.file_size as usize;
         let compressed = block.flags & (FLAG_COMPRESS | FLAG_IMPLODE) != 0;
         let implode_only = block.flags & FLAG_IMPLODE != 0 && block.flags & FLAG_COMPRESS == 0;
+        let key = (block.flags & FLAG_ENCRYPTED != 0).then(|| {
+            file_key(
+                name,
+                block.file_pos,
+                block.file_size,
+                block.flags & FLAG_FIX_KEY != 0,
+            )
+        });
 
         let file_len = file.metadata()?.len();
         let avail = avail_from(file_len, file_pos);
@@ -242,11 +256,27 @@ impl Archive {
             sector_size: idx.sector_size,
             offsets: None,
             implode_only,
+            key,
             avail,
             pos: 0,
             sector: None,
         };
         if !compressed {
+            if key.is_some() {
+                // Stored and encrypted: each sector is keyed by its index, so the file reads
+                // through the sector path over offsets that just tile it, every sector verbatim.
+                if capped(file_size, 1, avail) < file_size {
+                    return Err(Error::Corrupt(format!(
+                        "{name}: stored size ({file_size}) larger than the archive"
+                    )));
+                }
+                let offsets = (0..file_size.div_ceil(idx.sector_size))
+                    .map(|i| (i * idx.sector_size) as u32)
+                    .chain(std::iter::once(file_size as u32))
+                    .collect();
+                open.offsets = Some(offsets);
+                return Ok(open);
+            }
             // Stored: exactly `file_size` raw bytes, refused up front if the file cannot hold them.
             if capped(file_size, 1, avail) < file_size {
                 return Err(Error::Corrupt(format!(
@@ -271,6 +301,10 @@ impl Archive {
         open.file.seek(SeekFrom::Start(file_pos))?;
         let mut otab = vec![0u8; otab_cap * 4]; // == otab_len * 4, proven <= avail above
         open.file.read_exact(&mut otab)?;
+        if let Some(key) = key {
+            // The offset table is keyed one below the first sector.
+            decrypt_bytes(&mut otab, key.wrapping_sub(1));
+        }
         let offsets = otab
             .as_chunks::<4>()
             .0
@@ -298,6 +332,8 @@ pub struct ArchiveFile {
     /// The sector offset table, relative to `base`; `None` for a stored file.
     offsets: Option<Vec<u32>>,
     implode_only: bool,
+    /// The decryption key of an encrypted file; sector `i` is keyed `key + i`.
+    key: Option<u32>,
     /// Bytes from `base` to the archive's end: the cap on every length read from a header.
     avail: usize,
     /// The read position in the uncompressed file.
@@ -358,6 +394,9 @@ impl ArchiveFile {
             .seek(SeekFrom::Start(self.base + u64::from(start)))?;
         let mut raw = vec![0u8; comp_len]; // proven <= avail above
         self.file.read_exact(&mut raw)?;
+        if let Some(key) = self.key {
+            decrypt_bytes(&mut raw, key.wrapping_add(i as u32));
+        }
 
         let out = if comp_len >= want {
             // A sector that would not shrink is stored verbatim.
@@ -559,7 +598,8 @@ fn read_block_table(
             let o = i * 4;
             BlockEntry {
                 file_pos: words[o],
-                // words[o + 1] is compressed_size, unread: the offset table sizes the sectors.
+                // The reads size the sectors off the offset table; this is for accounting.
+                stored_size: words[o + 1],
                 file_size: words[o + 2],
                 flags: words[o + 3],
             }
@@ -721,6 +761,43 @@ mod tests {
         assert!(!arc.is_delete_marker("Interface\\a.txt"));
         assert_eq!(arc.read_file("Interface\\a.txt").unwrap(), b"hello");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// `plain` encrypted as a stored file at the fixture's data position (112), sector by sector.
+    fn encrypt_stored(name: &str, plain: &[u8], flags: u32, sector_size: usize) -> Vec<u8> {
+        let key = file_key(name, 112, plain.len() as u32, flags & FLAG_FIX_KEY != 0);
+        let mut out = plain.to_vec();
+        for (i, sector) in out.chunks_mut(sector_size).enumerate() {
+            let mut words: Vec<u32> = sector
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| u32::from_le_bytes(*c))
+                .collect();
+            crypto::encrypt_block(&mut words, key.wrapping_add(i as u32));
+            for (c, w) in sector.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+                *c = w.to_le_bytes();
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn encrypted_stored_entries_decrypt_with_and_without_fix_key() {
+        // Two sectors (512 bytes each at shift 0) and a 3-byte tail that stays plain.
+        let plain: Vec<u8> = (0..1027u32).map(|i| (i * 7 + 3) as u8).collect();
+        let name = "(listfile)";
+        for flags in [
+            FLAG_EXISTS | FLAG_ENCRYPTED,
+            FLAG_EXISTS | FLAG_ENCRYPTED | FLAG_FIX_KEY,
+        ] {
+            let data = encrypt_stored(name, &plain, flags, 512);
+            assert_ne!(data, plain, "the fixture is really encrypted");
+            let (arc, path) =
+                open_temp_kept("encrypted", &archive_with_one_entry(name, flags, &data));
+            assert_eq!(arc.read_file(name).unwrap(), plain, "flags {flags:#x}");
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     #[test]

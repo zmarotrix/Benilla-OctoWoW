@@ -45,7 +45,9 @@ pub use blp::{BlpImageLoader, BlpLoaderSettings, BlpVariant};
 mod gpu_blp;
 pub use gpu_blp::{bc_supported, for_upload, publish_bc_support, BlpGpuSupportPlugin, UploadChain};
 mod tex_filter;
-pub use tex_filter::{publish_tex_filter, tex_filter, TexFilterSetting, ANISO_RANGE};
+pub use tex_filter::{
+    base_mip, publish_base_mip, publish_tex_filter, tex_filter, TexFilterSetting, ANISO_RANGE,
+};
 mod m2;
 pub use m2::{
     EmitterBillboard, M2Model, M2ModelLoader, M2SequenceInfo, ModelEmitter, ModelLight,
@@ -61,18 +63,37 @@ pub use wmo::{
 /// The asset-source id for MPQ-backed assets: load paths look like `mpq://World/Azeroth/foo.adt`.
 pub const MPQ_SOURCE: &str = "mpq";
 
-/// A Bevy [`AssetReader`] over the MPQ patch chain; every clone shares the one open [`Chain`].
+/// A Bevy [`AssetReader`] over the MPQ patch chain; every clone shares the one open [`Chain`],
+/// which [`MpqChain::swap`] replaces while the client runs.
 #[derive(Clone)]
 pub struct MpqAssetReader {
-    chain: Arc<Chain>,
+    chain: MpqChain,
 }
 
 impl MpqAssetReader {
     /// Open the patch chain from a `Data` directory or a single `.MPQ`.
     pub fn open(data_dir: &Path) -> Result<Self> {
         Ok(Self {
-            chain: Arc::new(Chain::open(data_dir)?),
+            chain: MpqChain(Arc::new(std::sync::RwLock::new(Arc::new(Chain::open(
+                data_dir,
+            )?)))),
         })
+    }
+}
+
+/// The chain the `mpq://` and `mpq-loose://` sources read, shared with every reader clone.
+#[derive(Resource, Clone)]
+pub struct MpqChain(Arc<std::sync::RwLock<Arc<Chain>>>);
+
+impl MpqChain {
+    fn current(&self) -> Arc<Chain> {
+        self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Read from `chain` from now on: a server's streamed content mounted or taken away while
+    /// the client runs. Reads already under way finish on the chain they began with.
+    pub fn swap(&self, chain: Chain) {
+        *self.0.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(chain);
     }
 }
 
@@ -89,10 +110,11 @@ impl MpqAssetReader {
     /// The bytes of the archive file `path` names.
     fn read_bytes(&self, path: &Path) -> Result<Vec<u8>, AssetReaderError> {
         let internal = internal_path(path)?;
-        if !self.chain.contains(&internal) {
+        let chain = self.chain.current();
+        if !chain.contains(&internal) {
             return Err(AssetReaderError::NotFound(path.to_path_buf()));
         }
-        self.chain
+        chain
             .read(&internal)
             .map_err(|e| AssetReaderError::Io(Arc::new(std::io::Error::other(format!("{e:#}")))))
     }
@@ -259,6 +281,7 @@ fn strip_sampler_marker(path: &str) -> Option<String> {
 /// `AssetPlugin` builds (before `DefaultPlugins`), which reads the sources.
 pub fn register_mpq_source(app: &mut App, data_dir: &Path) -> Result<()> {
     let reader = MpqAssetReader::open(data_dir)?;
+    app.insert_resource(reader.chain.clone());
     let loose = LooseAssetReader {
         mpq: reader.clone(),
         loose: LooseFiles::install(),

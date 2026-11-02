@@ -352,6 +352,7 @@ impl Plugin for AreaPlugin {
                     .after(benilla_world::schedule::WorldStage::Stream)
                     .after(crate::target::TargetUpdate),
             );
+        crate::live_data::loader(app, load_area_table);
     }
 }
 

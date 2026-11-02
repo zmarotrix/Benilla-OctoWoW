@@ -23,8 +23,6 @@
 //! boot like `gxMultisample`: a baked sampler cannot change without a rebuild, which is why the
 //! reference's UI says "enabled upon restart".
 
-use std::sync::OnceLock;
-
 use bevy::image::ImageFilterMode;
 use bevy::prelude::*;
 use bevy::render::render_resource::FilterMode;
@@ -103,23 +101,90 @@ impl TexFilterSetting {
     }
 }
 
-static POLICY: OnceLock<TexFilterSetting> = OnceLock::new();
+/// Settable, not a once-cell: the boot screens load textures before the CVars are read, and a
+/// once-cell those loads filled would have frozen the default over the saved setting.
+static POLICY: std::sync::RwLock<Option<TexFilterSetting>> = std::sync::RwLock::new(None);
 
-/// Publish the resolved policy once, from the CVar load (`benilla_app::cvars::load_config`, the
-/// `CvarLoad` set): after `config.toml` is folded in, before any system can request a texture.
+/// Publish the resolved policy, from the CVar load (`benilla_app::cvars::load_config`, the
+/// `CvarLoad` set): after `config.toml` is folded in. Textures loaded before keep their sampler.
 pub fn publish_tex_filter(setting: TexFilterSetting) {
-    let _ = POLICY.set(setting);
+    *POLICY.write().unwrap_or_else(|e| e.into_inner()) = Some(setting);
 }
 
 /// The policy every sampler takes; unpublished (the world viewer, a headless test), it is
 /// [`TexFilterSetting::default`], a fresh install's value.
 pub fn tex_filter() -> TexFilterSetting {
-    *POLICY.get_or_init(TexFilterSetting::default)
+    let published = *POLICY.read().unwrap_or_else(|e| e.into_inner());
+    published.unwrap_or_default()
+}
+
+/// An atomic, not a once-cell: the boot screens load textures before the CVars are read, and
+/// those keep their full size.
+static BASE_MIP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Publish `baseMip` once, beside the filter policy: 1 uploads world textures from their second
+/// level, half the width and height, a quarter of the memory. Latched at boot as the reference
+/// latches it ("changed upon restart").
+pub fn publish_base_mip(level: u32) {
+    BASE_MIP.store(level.min(1), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The levels a world texture skips: `baseMip`, 0 unpublished.
+pub fn base_mip() -> u32 {
+    BASE_MIP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// `chain` from level `skip` on, as long as the smaller top keeps a whole compressed block (4
+/// texels each way) and leaves a level to draw: a small texture keeps its size.
+pub fn skip_top_mips(chain: &mut benilla_formats::BlpMipChain, skip: u32) {
+    let mut skip = skip as usize;
+    while skip > 0
+        && (chain.mips.len() <= skip || (chain.width >> skip) < 4 || (chain.height >> skip) < 4)
+    {
+        skip -= 1;
+    }
+    if skip == 0 {
+        return;
+    }
+    chain.mips.drain(..skip);
+    chain.width >>= skip;
+    chain.height >>= skip;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chain(width: u32, height: u32, levels: usize) -> benilla_formats::BlpMipChain {
+        let mut c = benilla_formats::BlpMipChain {
+            width,
+            height,
+            texels: benilla_formats::BlpTexels::Rgba8Unorm,
+            mips: Vec::new(),
+        };
+        c.mips = (0..levels).map(|i| vec![i as u8]).collect();
+        c
+    }
+
+    #[test]
+    fn base_mip_drops_the_top_level_but_keeps_a_whole_block() {
+        let mut c = chain(256, 128, 9);
+        skip_top_mips(&mut c, 1);
+        assert_eq!(
+            (c.width, c.height, c.mips.len(), c.mips[0][0]),
+            (128, 64, 8, 1)
+        );
+        let mut small = chain(4, 4, 3);
+        skip_top_mips(&mut small, 1);
+        assert_eq!(
+            (small.width, small.mips.len()),
+            (4, 3),
+            "a 4x4 keeps its size"
+        );
+        let mut single = chain(64, 64, 1);
+        skip_top_mips(&mut single, 1);
+        assert_eq!(single.mips.len(), 1, "a lone level stays");
+    }
 
     /// `hwDetect`'s row-170 outcome, mode 4. `Default` is also the unpublished fallback; it reads
     /// the env, so a set lever skips the test.

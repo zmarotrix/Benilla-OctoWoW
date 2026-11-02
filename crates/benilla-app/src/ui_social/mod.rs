@@ -875,6 +875,7 @@ impl Plugin for UiSocialPlugin {
                 load_lfg_dungeons.after(benilla_assets::AssetSet::Open),
             )
             .add_systems(Update, feed::feed_social.in_set(UiFeed));
+        crate::live_data::loader(app, load_lfg_dungeons);
     }
 }
 

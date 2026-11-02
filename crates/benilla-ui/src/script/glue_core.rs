@@ -400,7 +400,10 @@ pub fn glue_status_key(code: i32) -> &'static str {
 
 /// The hosts `LaunchURL` opens, the 10-entry table at `0x85cc34`: a leading `*` stands for one
 /// label, so `*.blizzard.com` takes `forums.blizzard.com` and not `a.b.blizzard.com`.
-const LAUNCH_HOSTS: [&str; 10] = [
+///
+/// Deviation: OctoWoW's own site, `octowow.st` and one label under it, is added after the table,
+/// so the server's website, database and community links open from the login screen.
+const LAUNCH_HOSTS: [&str; 12] = [
     "*.blizzard.com",
     "*.blizzcon.com",
     "www.battle.net",
@@ -411,6 +414,8 @@ const LAUNCH_HOSTS: [&str; 10] = [
     "*.wow-europe.com",
     "*.wowchina.com",
     "*.wowtaiwan.com.tw",
+    "octowow.st",
+    "*.octowow.st",
 ];
 
 /// The gate in front of the browser: `0x5abd00` tests `0x5abc10` and `0x429ff0` takes the URL.
@@ -1528,6 +1533,10 @@ mod tests {
             "http://www.battle.net/x",
             "http://www.wow-europe.com/en/info/theburningcrusade.html",
             "http://status.wow-europe.com/en/alert",
+            // OctoWoW's site, the login screen's links.
+            "http://octowow.st/",
+            "http://octowow.st/db/",
+            "http://octowow.st/social",
         ];
         for url in ok {
             assert!(launch_url_allowed(url), "{url}");

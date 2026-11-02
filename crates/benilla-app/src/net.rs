@@ -80,6 +80,8 @@ impl Plugin for NetPlugin {
         game_time::register(app);
         world::register(app);
         session::register(app);
+        crate::server_extensions::register(app);
+        crate::content_stream::register(app);
         objects::register(app);
         crate::names::net::register(app);
         app.insert_resource(NetEvents(handles.events))

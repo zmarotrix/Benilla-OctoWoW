@@ -174,6 +174,16 @@ pub(crate) struct Cooldowns {
     /// `[0xcee8b8]`, the receive time from which a go sweeps both lists ([`Self::sweep_at_go`]),
     /// `None` its 0; the player's list holds it, and nothing resets it.
     next_sweep: Option<Instant>,
+    /// The last GCD armed at a cast send, for nampower's queue alone ([`Self::queue_gcd_left`]).
+    queue_gcd: Option<QueueGcd>,
+}
+
+/// A GCD as nampower's queue times it: `(spell, startRecoveryCategory, end)`.
+#[derive(Clone, Copy, Debug)]
+struct QueueGcd {
+    spell_id: u32,
+    category: u32,
+    end: Instant,
 }
 
 /// `StartCooldown 0x6e2c60`'s own arguments: the spell and item, the category, the two remainders
@@ -601,6 +611,13 @@ impl Cooldowns {
         if duration_ms == 0 {
             return;
         }
+        if duration_ms > 0 {
+            self.queue_gcd = Some(QueueGcd {
+                spell_id,
+                category: spell.start_recovery_category,
+                end: now + Duration::from_millis(duration_ms as u64),
+            });
+        }
         if benilla_assets::trace::enabled() {
             benilla_assets::trace::line(
                 "cd",
@@ -634,6 +651,9 @@ impl Cooldowns {
     /// `0x6e1663`); with a match, the sweep of the whole list at now, every spell's records
     /// (`0x6e1678` → `0x6e1910(list, now)`), and the flush (`0x6e167d`).
     pub(crate) fn clear_gcd(&mut self, spell_id: u32, now: Instant) {
+        if self.queue_gcd.is_some_and(|g| g.spell_id == spell_id) {
+            self.queue_gcd = None;
+        }
         if !self.records.iter().any(|r| r.spell_id == spell_id) {
             return;
         }
@@ -642,6 +662,15 @@ impl Cooldowns {
         }
         self.write(Write::ClearGcd(spell_id, now));
         self.flush();
+    }
+
+    /// What is left of the last cast-send GCD for a spell of `start_recovery_category`, for
+    /// nampower's queue. Deviation: the queue does not read the GCD from the records, since the
+    /// sweeps (`0x6e1910`) free a record with only its GCD left while that GCD still runs.
+    pub(crate) fn queue_gcd_left(&self, start_recovery_category: u32, now: Instant) -> Duration {
+        self.queue_gcd
+            .filter(|g| g.category == start_recovery_category)
+            .map_or(Duration::ZERO, |g| g.end.saturating_duration_since(now))
     }
 
     /// `SMSG_COOLDOWN_EVENT` (`0x6e3050` → `0x6e1790`, force 0): an on-hold record's recovery and
@@ -1211,6 +1240,32 @@ mod tests {
         // Frost Nova's own button reads the longer, its own cooldown.
         let own = cds.info(122, 0, Some(&frost_nova), mid);
         assert_eq!((own.remaining_ms, own.duration_ms), (24_900, 25_000));
+    }
+
+    /// The go's sweep frees a GCD-only record; the queue's GCD still runs, and a failed cast of
+    /// the same spell ends it.
+    #[test]
+    fn the_queue_gcd_outlives_the_go_sweep_and_ends_on_a_failed_cast() {
+        let t0 = Instant::now();
+        let mut cds = Cooldowns::default();
+        let mut pet = Cooldowns::pet();
+        let frost_armor = spell(0, 0, 0, (133, 1500), 0);
+        cds.start_gcd(168, &frost_armor, t0, &super::SpellModifiers::default());
+        cds.sweep_at_go(&mut pet, t0 + Duration::from_millis(45));
+
+        let mid = t0 + Duration::from_millis(1200);
+        assert_eq!(cds.info(168, 0, Some(&frost_armor), mid).remaining_ms, 0);
+        assert_eq!(cds.queue_gcd_left(133, mid), Duration::from_millis(300));
+        assert_eq!(
+            cds.queue_gcd_left(0, mid),
+            Duration::ZERO,
+            "another GCD category"
+        );
+
+        cds.clear_gcd(122, mid);
+        assert_eq!(cds.queue_gcd_left(133, mid), Duration::from_millis(300));
+        cds.clear_gcd(168, mid);
+        assert_eq!(cds.queue_gcd_left(133, mid), Duration::ZERO);
     }
 
     #[test]

@@ -71,6 +71,10 @@ where
         ..Default::default()
     };
     fill_group(&mut g, group, &held);
+    // SuperWoW's `markN` tokens read the raid-target board.
+    if let Some(group) = group {
+        g.raid_marks = group.raid_targets;
+    }
     let mut walk: Vec<u64> = [me, pet, target, mouseover, npc].into();
     walk.extend(g.party.iter().chain(&g.party_pets).copied());
     walk.extend(g.raid.iter().chain(&g.raid_pets).copied());

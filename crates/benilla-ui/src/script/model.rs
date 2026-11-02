@@ -550,6 +550,10 @@ pub(crate) struct Model {
     /// console.
     pub(crate) cvar_console: Vec<String>,
     pub(crate) cvars_warned: HashSet<String>,
+    /// The keys [`Self::record_warning_once`] has logged.
+    pub(crate) warned_once: HashSet<String>,
+    /// SuperWoW's `TrackUnit` list: friendly units the minimap draws as group members, in order.
+    pub(crate) tracked_units: Vec<u64>,
     /// The lowercased names a Lua `SetCVar` refuses, the reference's flag bit2 (`rec+0x1c & 4`,
     /// `CVar::SetReadOnly 0x63e030`). Kept beside the rows, so a host re-seed never clears it.
     pub(crate) cvars_read_only: HashSet<String>,
@@ -567,6 +571,8 @@ pub(crate) struct Model {
     pub(crate) video_caps: super::cvars::VideoCaps,
     /// The `gxRestart` runs no call took, a bare VM's, for the host's frame drain.
     pub(crate) restart_gx_asks: u32,
+    /// The login screen's launcher actions for the host's frame drain ([`super::glue_launcher`]).
+    pub(crate) launcher_asks: Vec<super::glue_launcher::LauncherAsk>,
 
     /// Globals `RegisterForSave` declared, in order: written at logout and read back at load.
     pub(crate) saved_names: Vec<String>,
@@ -1250,6 +1256,14 @@ impl Model {
         self.warnings.push(msg);
     }
 
+    /// [`Self::record_warning`] the first time `key` is seen this session; a repeat is dropped,
+    /// for a warning a script can raise every frame.
+    pub(crate) fn record_warning_once(&mut self, key: &str, msg: impl Into<String>) {
+        if self.warned_once.insert(key.to_owned()) {
+            self.record_warning(msg);
+        }
+    }
+
     /// A warning for the host's terminal only, for a message already retained under another kind.
     pub(crate) fn warn_host_only(&mut self, msg: String) {
         self.warnings.push(msg);
@@ -1498,12 +1512,15 @@ impl Model {
             cvar_lua_created: 0,
             cvar_console: Vec::new(),
             cvars_warned: HashSet::new(),
+            warned_once: HashSet::new(),
+            tracked_units: Vec::new(),
             cvars_read_only: HashSet::new(),
             multisample_formats: Vec::new(),
             screen_resolutions: Vec::new(),
             current_resolution: None,
             video_caps: super::cvars::VideoCaps::default(),
             restart_gx_asks: 0,
+            launcher_asks: Vec::new(),
             saved_names: Vec::new(),
             held_saved_files: Vec::new(),
             loaded_saved_files: Vec::new(),

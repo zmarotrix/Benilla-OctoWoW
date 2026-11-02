@@ -1194,6 +1194,45 @@ fn save_config_on_exit(mut cvars: ResMut<Cvars>) {
     }
 }
 
+/// Merge `pairs` into `config.toml` ahead of its load ([`crate::wtf_import`]): each name a
+/// registered row has, in the row's spelling, over what the file held. Returns how many landed.
+pub(crate) fn merge_into_config(pairs: &[(String, String)]) -> std::io::Result<usize> {
+    let Some(path) = crate::local_state::config_path() else {
+        return Ok(0);
+    };
+    let mut config = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| toml::from_str::<LocalConfig>(&text).ok())
+        .unwrap_or_default();
+    let mut landed = 0;
+    for (name, value) in pairs {
+        let Some(row) = REGISTERED
+            .iter()
+            .find(|r| r.name.eq_ignore_ascii_case(name))
+        else {
+            continue;
+        };
+        config
+            .cvars
+            .retain(|k, _| !k.eq_ignore_ascii_case(row.name));
+        config.cvars.insert(row.name.to_string(), value.clone());
+        landed += 1;
+    }
+    let body = toml::to_string(&config).expect("string map serializes");
+    crate::local_state::write_atomic(&path, &format!("{HEADER}{body}"))?;
+    Ok(landed)
+}
+
+/// What `config.toml` holds, name to value, for an export to a normal client's `Config.wtf`
+/// ([`crate::transfer`]); empty when the file is missing or does not parse.
+pub(crate) fn config_values() -> BTreeMap<String, String> {
+    crate::local_state::config_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| toml::from_str::<LocalConfig>(&text).ok())
+        .unwrap_or_default()
+        .cvars
+}
+
 /// Rewrite `config.toml` atomically from the registry, so a session with no VM saves what it
 /// changed.
 fn write_config(cvars: &mut Cvars) {
@@ -1228,8 +1267,24 @@ fn write_config(cvars: &mut Cvars) {
 /// Freeze the texture filter policy for the process and log the mode, so a player's log says which
 /// mode the run was in. Its own system after [`load_config`], so it publishes whatever the file
 /// held.
-fn publish_filter_policy(filter: Res<benilla_assets::TexFilterSetting>) {
+fn publish_filter_policy(filter: Res<benilla_assets::TexFilterSetting>, cvars: Option<Res<Cvars>>) {
     benilla_assets::publish_tex_filter(*filter);
+    // `baseMip`, latched beside it: 1 draws the world's textures at half size.
+    // `$WOW_BASEMIP` overrides for the session only, like `$WOW_ANISO`.
+    let base_mip = std::env::var("WOW_BASEMIP")
+        .ok()
+        .or_else(|| {
+            cvars
+                .as_deref()
+                .and_then(|c| c.get("baseMip"))
+                .map(str::to_owned)
+        })
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    benilla_assets::publish_base_mip(base_mip);
+    if base_mip > 0 {
+        info!("textures: baseMip {base_mip}, the world's art from its second level");
+    }
     let mode = filter.mode();
     let name = match mode {
         3 => "bilinear + nearest-mip select, aniso off",
@@ -1697,15 +1752,15 @@ mod tests {
             "elsewhere.example.org",
             "a known key with a bad value is consumed, and the resource keeps its truth",
         );
-        // Volume clamps at the knob to [0,1]; `farclip` refuses outside [177, 777] (`0x688d40`)
-        // and the old value stands.
+        // Volume clamps at the knob to [0,1]; `farclip` refuses outside [177, 1554] (`0x688d40`,
+        // benilla's extended top) and the old value stands.
         apply(&mut app, "mastervolume", "7");
         assert_eq!(res::<SoundConfig>(&app).master, 1.0);
         apply(&mut app, "farclip", "400");
         assert_eq!(apply(&mut app, "farclip", "50"), SetOutcome::Vetoed);
         assert_eq!(res::<ViewDistance>(&app).farclip, 400.0);
         assert_eq!(res::<Cvars>(&app).get("farclip"), Some("400"));
-        assert_eq!(apply(&mut app, "farclip", "1000"), SetOutcome::Vetoed);
+        assert_eq!(apply(&mut app, "farclip", "2000"), SetOutcome::Vetoed);
         assert_eq!(res::<ViewDistance>(&app).farclip, 400.0);
         assert!(FARCLIP_RANGE.contains(&res::<ViewDistance>(&app).farclip));
         // `nearclip` clamps to the callback's `[0.01, 0.33]` (`0x688d90`).
@@ -1836,7 +1891,7 @@ mod tests {
         apply(&mut app, "cameraDistanceMoveSpeed", "20");
         assert_eq!(res::<ZoomLimit>(&app).move_speed, 20.0);
         // The max orbit lands as yards on the knob: `cameraDistanceMax` x the factor, held to
-        // [0, 50]; the factor is not held to its slider's 1 to 2.
+        // [0, 100] (Vanilla Tweaks' ceiling); the factor is not held to its slider's 1 to 2.
         apply(&mut app, "cameraDistanceMaxFactor", "1");
         assert_eq!(res::<ZoomLimit>(&app).max, 15.0);
         apply(&mut app, "cameradistancemaxfactor", "3");
@@ -1845,18 +1900,20 @@ mod tests {
         apply(&mut app, "cameraDistanceMax", "25");
         assert_eq!(res::<ZoomLimit>(&app).max, 25.0);
         apply(&mut app, "cameraDistanceMaxFactor", "3");
-        assert_eq!(res::<ZoomLimit>(&app).max, 50.0);
+        assert_eq!(res::<ZoomLimit>(&app).max, 75.0);
+        apply(&mut app, "cameraDistanceMaxFactor", "5");
+        assert_eq!(res::<ZoomLimit>(&app).max, 100.0);
         apply(&mut app, "cameraDistanceMaxFactor", "-1");
         assert_eq!(res::<ZoomLimit>(&app).max, 0.0);
         // `SStrToFloat` reads "nan" as 0; a NaN takes an exponent past 4932.
         apply(&mut app, "cameraDistanceMaxFactor", "nan");
         assert_eq!(res::<ZoomLimit>(&app).max, 0.0);
         apply(&mut app, "cameraDistanceMaxFactor", "0e5000");
-        assert_eq!(res::<ZoomLimit>(&app).max, 50.0);
+        assert_eq!(res::<ZoomLimit>(&app).max, 100.0);
         // Out of `cameraDistanceMax`'s validator range (`0x50b310`): refused, 25 stands.
         apply(&mut app, "cameraDistanceMaxFactor", "1");
         assert_eq!(
-            apply(&mut app, "cameraDistanceMax", "60"),
+            apply(&mut app, "cameraDistanceMax", "120"),
             SetOutcome::Vetoed
         );
         assert_eq!(res::<ZoomLimit>(&app).max, 25.0);
@@ -2117,8 +2174,8 @@ mod tests {
             ),
             ("baseMip 5", "BaseMip must be 0 or 1", "baseMip", "0"),
             (
-                "farclip 1000",
-                "FarClip must be in range 177.0 - 777.0.",
+                "farclip 2000",
+                "FarClip must be in range 177.0 - 1554.0.",
                 "farclip",
                 "350",
             ),
@@ -2241,8 +2298,8 @@ mod tests {
             ),
             // A saved view's three, from `[0x84f790]`: `0x50b310`, `0x50b380`, `0x50b3c0`.
             (
-                "cameraDistanceC 60",
-                "Value out of range (0.000000 - 50.000000)",
+                "cameraDistanceC 120",
+                "Value out of range (0.000000 - 100.000000)",
                 "cameraDistanceC",
                 "13.88",
             ),
@@ -3173,7 +3230,8 @@ mod tests {
     /// The string-valued rows, a closed list, each default checked on its own terms: `realmName`
     /// and `accountName` (the reference's registered `""`, `0x882748`) and `gxApi` are empty until
     /// the session or the login screen writes them; `gxResolution` and `realmList` pass their callbacks' parsers
-    /// ([`crate::video::parse_resolution`], [`crate::realmlist::normalize`]).
+    /// ([`crate::video::parse_resolution`], [`crate::realmlist::normalize`]); `serverExtensions`
+    /// reads as `auto`.
     #[test]
     fn the_string_valued_cvars_are_the_realm_and_the_windowed_size() {
         let mut strings: Vec<&str> = REGISTERED
@@ -3185,11 +3243,22 @@ mod tests {
         assert_eq!(
             strings,
             vec![
+                // nampower's pet autocast lists, which its own settings addon writes.
+                "NP_DoomguardAutocastData",
+                "NP_FelguardAutocastData",
+                "NP_InfernalAutocastData",
+                "PB_AlwaysRenderPlayers",
+                "PB_AlwaysShownSpellIds",
+                "PB_HiddenSpellIds",
+                "PB_NeverRenderPlayers",
                 "accountName",
+                "benillaEquipmentSets",
                 "gxApi",
                 "gxResolution",
                 "realmList",
-                "realmName"
+                "realmName",
+                // `auto`, `on` or `off` ([`crate::server_extensions::Mode`]).
+                "serverExtensions"
             ]
         );
         let default_of = |name: &str| {
@@ -3202,6 +3271,10 @@ mod tests {
         assert_eq!(default_of("realmName"), "");
         assert_eq!(default_of("accountName"), "");
         assert_eq!(default_of("gxApi"), "");
+        assert_eq!(
+            crate::server_extensions::Mode::parse(default_of(crate::server_extensions::CVAR)),
+            crate::server_extensions::Mode::Auto
+        );
         assert_eq!(
             crate::video::parse_resolution(default_of("gxResolution")),
             Some(crate::video::DEFAULT_WINDOWED)
@@ -3575,6 +3648,178 @@ mod tests {
         /// Rows whose only reader is the stock interface.
         const LUA_ONLY: &[(&str, &str)] = &[
             (
+                "NP_QueueCastTimeSpells",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_QueueInstantSpells",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_QueueChannelingSpells",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_QueueTargetingSpells",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_QueueOnSwingSpells",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_QueueSpellsOnCooldown",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_InterruptChannelsOutsideQueueWindow",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_SpellQueueWindowMs",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_OnSwingBufferCooldownMs",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_ChannelQueueWindowMs",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_TargetingQueueWindowMs",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_CooldownQueueWindowMs",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_MinBufferTimeMs",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_NonGcdBufferTimeMs",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_MaxBufferIncreaseMs",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_RetryServerRejectedSpells",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_QuickcastTargetingSpells",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_QuickcastOnDoubleCast",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_ReplaceMatchingNonGcdCategory",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_OptimizeBufferUsingPacketTimings",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_PreventRightClickTargetChange",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_PreventRightClickPvPAttack",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_DoubleCastToEndChannelEarly",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_SpamProtectionEnabled",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_PreserveGreaterDemonAutocast",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_FelguardAutocastData",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_DoomguardAutocastData",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_InfernalAutocastData",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_PreventMountingWhenBuffCapped",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_EnableSpellEnergizeEvents",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_EnableEnhancedTooltips",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_EnableLocalSetRaidTarget",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_EnableUnitEventsPet",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_EnableUnitEventsParty",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_EnableUnitEventsRaid",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_EnableUnitEventsMouseover",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_EnableUnitEventsGuidFiltering",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_ChannelLatencyReductionPercentage",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_NameplateDistance",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_ChatBubbleDistance",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_ChatBubblesWhisper",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_ChatBubblesRaid",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
+                "NP_ChatBubblesBattleground",
+                "nampower's settings addon and the addons that tune it read it",
+            ),
+            (
                 "statusBarText",
                 "TextStatusBar.lua reads it on each CVAR_UPDATE",
             ),
@@ -3614,6 +3859,47 @@ mod tests {
             ("gxCursor", "OptionsFrame.lua's Hardware Cursor box"),
             ("gxFixLag", "OptionsFrame.lua's Fix Input Lag box"),
             ("gxRefresh", "OptionsFrame.lua's refresh-rate dropdown"),
+            (
+                "benillaEquipmentSets",
+                "ClientModAdapters.xml's C_EquipmentSet",
+            ),
+            (
+                "PB_AlwaysRenderPlayersWithAggro",
+                "PerfBoostSettings' settings.lua",
+            ),
+            ("PB_DoodadRenderDist", "PerfBoostSettings' settings.lua"),
+            (
+                "PB_DoodadRenderDistInCitiesAndRaids",
+                "PerfBoostSettings' settings.lua",
+            ),
+            (
+                "PB_ShowPlayerSpellVisuals",
+                "PerfBoostSettings' settings.lua",
+            ),
+            (
+                "PB_ShowPlayerGroundEffects",
+                "PerfBoostSettings' settings.lua",
+            ),
+            (
+                "PB_ShowPlayerAuraVisuals",
+                "PerfBoostSettings' settings.lua",
+            ),
+            ("PB_ShowUnitAuraVisuals", "PerfBoostSettings' settings.lua"),
+            (
+                "PB_HideSpellsForHiddenPlayers",
+                "PerfBoostSettings' settings.lua",
+            ),
+            (
+                "PB_HideLaggyBossSpellsOnOthers",
+                "PerfBoostSettings' settings.lua",
+            ),
+            ("PB_HiddenSpellIds", "PerfBoostSettings' settings.lua"),
+            ("PB_AlwaysShownSpellIds", "PerfBoostSettings' settings.lua"),
+            (
+                "PB_ApplyHiddenSpellIdsToMe",
+                "PerfBoostSettings' settings.lua",
+            ),
+            ("PB_DebugShownSpells", "PerfBoostSettings' settings.lua"),
         ];
         let app_src = crate::test_support::src_dir();
         let ui_src = app_src

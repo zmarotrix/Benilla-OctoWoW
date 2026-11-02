@@ -69,6 +69,7 @@ impl Plugin for AreaTriggerPlugin {
                     .in_set(WorldStage::Stream)
                     .in_set(crate::client_state::InWorldGated),
             );
+        crate::live_data::loader(app, load_area_triggers);
     }
 }
 

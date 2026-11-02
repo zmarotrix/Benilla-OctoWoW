@@ -178,6 +178,10 @@ fn every_query_binding_answers_the_reference_s_return_arity() {
             }
             answered.push(args);
             measured = true;
+            // SuperWoW's added returns (`benilla_ui::script::superwow`) are not the table's.
+            if SUPERWOW_ARITY.contains(&(*name, got as usize)) {
+                continue;
+            }
             if !want.contains(&(got as usize)) {
                 if let Some((_, known, _)) = NOT_YET_ASSERTED.iter().find(|(n, ..)| n == name) {
                     assert!(
@@ -873,6 +877,10 @@ fn predicate_names() -> Vec<String> {
 }
 
 /// Globals the boolean gate leaves alone: they end the session or the VM, not answer a value.
+/// The return counts SuperWoW gives a stock binding, which OctoWoW's client mods add on top of
+/// the reference's: `UnitExists`'s guid after its 1.
+const SUPERWOW_ARITY: &[(&str, usize)] = &[("UnitExists", 2)];
+
 const NOT_PROBED: &[&str] = &[
     "Quit",
     "ForceQuit",

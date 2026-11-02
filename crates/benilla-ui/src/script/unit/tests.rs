@@ -2008,10 +2008,12 @@ fn every_unit_predicate_is_one_or_nil_and_never_a_boolean() {
             !s.eval::<bool>(&format!("return {call} == true")).unwrap(),
             "{name}: `== true` must NEVER match — the reference cannot push tag 1"
         );
+        // SuperWoW's `UnitExists` adds the unit's guid as a second value.
+        let arity = if name == "UnitExists" { 2 } else { 1 };
         assert_eq!(
             s.arity(call).unwrap(),
-            1,
-            "{name} returns exactly one value on the true leg"
+            arity,
+            "{name} returns {arity} value(s) on the true leg"
         );
 
         // The false leg: nil, one value. Clearing the token also covers the absent-unit arm.

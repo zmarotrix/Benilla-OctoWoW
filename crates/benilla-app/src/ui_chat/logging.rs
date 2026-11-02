@@ -30,6 +30,9 @@ struct Files {
     dir: Option<PathBuf>,
     chat: Log,
     combat: Log,
+    /// SuperWoW's `WoWRawCombatLog.txt`: each combat line with guids for names, written while the
+    /// combat log is on ([`ChatLogFiles::record_raw`]), and `CombatLogAdd`'s raw lines.
+    raw: Option<std::fs::File>,
 }
 
 /// One log: its file, once opened, and its flag, which gates the writes.
@@ -62,7 +65,58 @@ impl ChatLogFiles {
             dir,
             chat: Log::default(),
             combat: Log::default(),
+            raw: None,
         })))
+    }
+
+    /// Append `line`, stamped, to `slot`'s file, opening `name` under the logs folder first.
+    fn append(dir: Option<&PathBuf>, slot: &mut Option<std::fs::File>, name: &str, line: &str) {
+        if slot.is_none() {
+            let Some(dir) = dir else {
+                return;
+            };
+            *slot = std::fs::create_dir_all(dir)
+                .and_then(|()| {
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(dir.join(name))
+                })
+                .map_err(|e| warn!("chat: cannot open {name}: {e}"))
+                .ok();
+        }
+        if let Some(file) = slot.as_mut() {
+            if writeln!(file, "{}  {line}", stamp()).is_err() {
+                *slot = None;
+            }
+        }
+    }
+
+    /// SuperWoW's raw log: a combat line with guids for names, while the combat log is on.
+    pub(crate) fn record_raw(&self, line: &str) {
+        let mut files = self.files();
+        if !files.combat.on {
+            return;
+        }
+        let dir = files.dir.clone();
+        Self::append(dir.as_ref(), &mut files.raw, "WoWRawCombatLog.txt", line);
+    }
+
+    /// SuperWoW's `CombatLogAdd(text [, raw])`: one line into the combat log, or the raw log,
+    /// whether or not logging is on.
+    pub(crate) fn add(&self, raw: bool, line: &str) {
+        let mut files = self.files();
+        let dir = files.dir.clone();
+        if raw {
+            Self::append(dir.as_ref(), &mut files.raw, "WoWRawCombatLog.txt", line);
+        } else {
+            Self::append(
+                dir.as_ref(),
+                &mut files.combat.file,
+                "WoWCombatLog.txt",
+                line,
+            );
+        }
     }
 
     fn files(&self) -> std::sync::MutexGuard<'_, Files> {
@@ -129,6 +183,7 @@ impl ChatLogFiles {
         let mut files = self.files();
         files.chat = Log::default();
         files.combat = Log::default();
+        files.raw = None;
     }
 }
 

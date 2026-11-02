@@ -144,6 +144,7 @@ pub(super) fn plugin(app: &mut App) {
     app.add_systems(Startup, load_go_sounds.after(AssetSet::Open))
         // In `Present`, with the GO scanner that feeds it and the state machine that dispatches.
         .add_systems(Update, go_display_sounds.in_set(WorldStage::Present));
+    crate::live_data::loader(app, load_go_sounds);
 }
 
 #[cfg(test)]

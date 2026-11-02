@@ -1,0 +1,13 @@
+[package]
+name = "benilla-content"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Content streaming: download, verify and keep the game-data packs a server offers"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+sha2 = "0.10.9"

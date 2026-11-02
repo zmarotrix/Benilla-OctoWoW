@@ -60,7 +60,7 @@ mod tests;
 mod walk_live_tests;
 
 pub(crate) use away::AfkMirror;
-pub(crate) use broadcast::Broadcast;
+pub(crate) use broadcast::{Broadcast, ServerMessages};
 /// The zone-channel catalog's seed, called from the world-entry UI load: addons read the catalog
 /// at file scope, before an `Update` push would land.
 pub(crate) use channels::{seed_zone_channel_catalog, TaxiWalk};
@@ -233,6 +233,9 @@ impl Plugin for UiChatPlugin {
                     .in_set(crate::ui_script::SessionEnd::Clears),
             );
         settings::plugin(app);
+        crate::live_data::loader(app, channels::load_chat_channels);
+        crate::live_data::loader(app, feed::load_emote_texts);
+        crate::live_data::loader(app, broadcast::load_server_messages);
     }
 }
 

@@ -570,7 +570,7 @@ impl Harness {
             .init_resource::<PaneDisplays>()
             .init_resource::<Booths>()
             .init_resource::<BoothPanes>()
-            .init_resource::<DressUpBake>()
+            .init_resource::<DressUpBakes>()
             .init_resource::<GxAspect>()
             .init_resource::<crate::net::GuidIndex>()
             .init_resource::<Assets<Image>>()
@@ -1021,7 +1021,8 @@ fn the_dressing_room_on_the_player_wears_the_rooms_assembly() {
     let meshes = Assets::<Mesh>::default();
     let (tried_on, again) = (meshes.reserve_handle(), meshes.reserve_handle());
     {
-        let mut bake = h.app.world_mut().resource_mut::<DressUpBake>();
+        let mut bakes = h.app.world_mut().resource_mut::<DressUpBakes>();
+        let bake = bakes.0.entry(room).or_default();
         bake.parts = vec![super::super::PreviewPart {
             static_mesh: tried_on.clone(),
             skinned_mesh: None,
@@ -1041,7 +1042,8 @@ fn the_dressing_room_on_the_player_wears_the_rooms_assembly() {
 
     // A new assembly re-dresses the copy that stands.
     {
-        let mut bake = h.app.world_mut().resource_mut::<DressUpBake>();
+        let mut bakes = h.app.world_mut().resource_mut::<DressUpBakes>();
+        let bake = bakes.0.get_mut(&room).expect("the room's bake");
         bake.parts[0].static_mesh = again.clone();
         bake.revision = 2;
     }

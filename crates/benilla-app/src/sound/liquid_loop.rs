@@ -303,4 +303,5 @@ pub(super) fn plugin(app: &mut App) {
                 .in_set(WorldStage::Present)
                 .before(kit::pump_channels),
         );
+    crate::live_data::loader(app, load_water_sounds);
 }

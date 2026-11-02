@@ -12,9 +12,9 @@ use benilla_protocol::{
 use bevy::prelude::*;
 
 use crate::portrait::{
-    BoothTwins, DressUpBake, DressUpLook, DressUpPreview, GhostKit, GlueLook, GluePetBake,
-    GluePreview, GluePreviewBake, PetLook, PreviewBillboard, PreviewEffects, PreviewPart,
-    PreviewRider,
+    BoothTwins, DressUpBake, DressUpBakes, DressUpLook, DressUpPreview, GhostKit, GlueLook,
+    GluePetBake, GluePreview, GluePreviewBake, PetLook, PreviewBillboard, PreviewEffects,
+    PreviewPart, PreviewRider,
 };
 use benilla_assets::materials::WowModelMaterial;
 
@@ -274,11 +274,12 @@ pub(in crate::entities) fn build_glue_preview(
     state.built = true;
 }
 
-/// Assemble the dressing room's look, whose equipment [`crate::ui_dressup`] composed from the
-/// player's worn items and the try-ons; retries while an item model loads.
+/// Assemble each dress-up pane's look, whose equipment [`crate::ui_dressup`] composed from the
+/// player's worn items and that pane's try-ons; retries while an item model loads. A pane whose
+/// look is gone loses its bake.
 pub(in crate::entities) fn build_dressup_preview(
     preview: Res<DressUpPreview>,
-    mut bake: ResMut<DressUpBake>,
+    mut bakes: ResMut<DressUpBakes>,
     creatures: Option<Res<Creatures>>,
     characters: Option<Res<Characters>>,
     mut displays: Option<ResMut<ItemDisplays>>,
@@ -288,88 +289,91 @@ pub(in crate::entities) fn build_dressup_preview(
     mut skin_composites: ResMut<SkinComposites>,
     asset_server: Res<AssetServer>,
     mut mats: benilla_world::model_render::M2BatchMaterials,
-    mut state: Local<DressUpState>,
+    mut state: Local<DressUpStates>,
 ) {
-    if state.last_look != preview.look {
-        state.last_look = preview.look;
-        state.built = false;
-    }
-    if state.built {
-        return;
-    }
+    state
+        .panes
+        .retain(|pane, _| preview.looks.contains_key(pane));
+    bakes.0.retain(|pane, _| preview.looks.contains_key(pane));
 
-    let Some(look) = preview.look else {
-        if bake.look.is_some() {
-            *bake = DressUpBake {
-                revision: bake.revision + 1,
-                ..default()
-            };
+    for (&pane, &look) in &preview.looks {
+        let pane_state = state.panes.entry(pane).or_default();
+        if pane_state.last_look != Some(look) {
+            pane_state.last_look = Some(look);
+            pane_state.built = false;
         }
-        state.built = true;
-        return;
-    };
+        if pane_state.built {
+            continue;
+        }
+        let Some(creatures) = creatures.as_deref() else {
+            return;
+        };
+        let spec = PreviewSpec {
+            display_id: look.display_id,
+            race: look.race,
+            sex: look.sex,
+            skin: look.skin,
+            face: look.face,
+            hair_style: look.hair_style,
+            hair_color: look.hair_color,
+            facial_hair: look.facial_hair,
+            equipment: look.equipment,
+            emblem: look.emblem,
+            // No hide flags: `crate::ui_dressup` already left out a hidden worn helm or cloak, as
+            // `SetUnit` (`0x505d70`) clones the live display pointers (`0x476cb0`), and a mask
+            // here would hide a tried-on one.
+            flags: 0,
+            // The ranged slot here only holds a try-on: `SetUnit` clones the live model, which
+            // shows a ranged weapon only while ranged-drawn, so `crate::ui_dressup` leaves a worn
+            // one out.
+            ranged_in_hand: true,
+        };
+        let Some(a) = assemble(
+            &spec,
+            &mut PreviewCtx {
+                creatures,
+                characters: characters.as_deref(),
+                displays: displays.as_deref_mut(),
+                glows: glows.as_deref_mut(),
+                sections: sections.as_deref(),
+                images: &mut images,
+                skin_composites: &mut skin_composites,
+                asset_server: &asset_server,
+                mats: &mut mats,
+            },
+        ) else {
+            continue; // an item model is still loading: retry next frame
+        };
 
-    let Some(creatures) = creatures.as_deref() else {
-        return;
-    };
-    let spec = PreviewSpec {
-        display_id: look.display_id,
-        race: look.race,
-        sex: look.sex,
-        skin: look.skin,
-        face: look.face,
-        hair_style: look.hair_style,
-        hair_color: look.hair_color,
-        facial_hair: look.facial_hair,
-        equipment: look.equipment,
-        emblem: look.emblem,
-        // No hide flags: `crate::ui_dressup` already left out a hidden worn helm or cloak, as
-        // `SetUnit` (`0x505d70`) clones the live display pointers (`0x476cb0`), and a mask here
-        // would hide a tried-on one.
-        flags: 0,
-        // The ranged slot here only holds a try-on: `SetUnit` clones the live model, which shows
-        // a ranged weapon only while ranged-drawn, so `crate::ui_dressup` leaves a worn one out.
-        ranged_in_hand: true,
-    };
-    let Some(a) = assemble(
-        &spec,
-        &mut PreviewCtx {
-            creatures,
-            characters: characters.as_deref(),
-            displays: displays.as_deref_mut(),
-            glows: glows.as_deref_mut(),
-            sections: sections.as_deref(),
-            images: &mut images,
-            skin_composites: &mut skin_composites,
-            asset_server: &asset_server,
-            mats: &mut mats,
-        },
-    ) else {
-        return; // an item model is still loading: retry next frame
-    };
-
-    debug!(
-        "dressup preview: race {} sex {} display {} → {} parts, {} riders, {} camera-facing, \
-         {} effect model(s)",
-        look.race,
-        look.sex,
-        look.display_id,
-        a.parts.len(),
-        a.riders.len(),
-        a.billboards.len(),
-        a.effects.len(),
-    );
-    *bake = DressUpBake {
-        look: Some(look),
-        display_id: look.display_id,
-        parts: a.parts,
-        riders: a.riders,
-        effects: a.effects,
-        billboards: a.billboards,
-        grip: a.grip,
-        revision: bake.revision + 1,
-    };
-    state.built = true;
+        debug!(
+            "dressup preview: race {} sex {} display {} → {} parts, {} riders, {} camera-facing, \
+             {} effect model(s)",
+            look.race,
+            look.sex,
+            look.display_id,
+            a.parts.len(),
+            a.riders.len(),
+            a.billboards.len(),
+            a.effects.len(),
+        );
+        // One counter across panes: a pane shown again never meets a revision it drew before.
+        state.revision += 1;
+        bakes.0.insert(
+            pane,
+            DressUpBake {
+                display_id: look.display_id,
+                parts: a.parts,
+                riders: a.riders,
+                effects: a.effects,
+                billboards: a.billboards,
+                grip: a.grip,
+                revision: state.revision,
+            },
+        );
+        if let Some(pane_state) = state.panes.get_mut(&pane) {
+            pane_state.built = true;
+        }
+    }
 }
 
 /// The character-select ghost's `SpellVisualKit` row, hard-coded as in the reference: `0x47280f`
@@ -1009,11 +1013,18 @@ pub(in crate::entities) struct PreviewState {
     built: bool,
 }
 
-/// [`build_dressup_preview`]'s per-run memory.
+/// [`build_dressup_preview`]'s memory of one pane.
 #[derive(Default)]
 pub(in crate::entities) struct DressUpState {
     last_look: Option<DressUpLook>,
     built: bool,
+}
+
+/// [`build_dressup_preview`]'s per-run memory: each pane's, and the last revision handed out.
+#[derive(Default)]
+pub(in crate::entities) struct DressUpStates {
+    panes: std::collections::HashMap<benilla_ui::widget::FrameHandle, DressUpState>,
+    revision: u64,
 }
 
 #[cfg(test)]

@@ -1078,6 +1078,7 @@ pub(super) fn plugin(app: &mut App) {
             OnExit(crate::client_state::ClientState::InWorld),
             stop_all_channels,
         );
+    crate::live_data::loader(app, load_sound_kits);
 }
 
 #[cfg(test)]

@@ -73,10 +73,14 @@ pub struct ViewDistance {
     pub nearclip: f32,
 }
 
-/// The settable range of [`ViewDistance::farclip`]: the range the reference's `farclip` callback
-/// `0x688d40` accepts, `[0x81021c]` = 177 to `[0x80fed8]` = 777, refusing anything else; shared by
-/// the CVar apply, the options row and `$WOW_FARCLIP`, which clamps to it.
-pub const FARCLIP_RANGE: std::ops::RangeInclusive<f32> = 177.0..=777.0;
+/// The settable range of [`ViewDistance::farclip`], shared by the CVar apply, the options row and
+/// `$WOW_FARCLIP`, which clamps to it. Deviation: the reference's callback `0x688d40` accepts
+/// `[0x81021c]` = 177 to `[0x80fed8]` = 777 ([`REFERENCE_FARCLIP_MAX`]); benilla's extended view
+/// distance doubles the top, the terrain window and the far wall scaling with it.
+pub const FARCLIP_RANGE: std::ops::RangeInclusive<f32> = 177.0..=1554.0;
+
+/// The reference's top of the `farclip` range, 777 yd.
+pub const REFERENCE_FARCLIP_MAX: f32 = 777.0;
 
 /// The settable range of [`ViewDistance::nearclip`]: the bounds in the reference's `nearclip`
 /// change callback `0x688d90`, `[0x8029d0]` = 0.01 and `[0x808300]` = 0.33.

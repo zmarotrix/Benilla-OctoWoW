@@ -426,6 +426,7 @@ impl Plugin for SoundPlugin {
                 poll_mix_health,
             ),
         );
+        crate::live_data::loader(app, load_materials);
         probe::plugin(app);
         kit::plugin(app);
         liquid_loop::plugin(app);

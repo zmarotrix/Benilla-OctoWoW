@@ -62,7 +62,17 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
         "UnitExists",
         lua.create_function(|lua, token: Value| {
             let token = optional_string(lua, &token);
-            unit_predicate(lua, &token, |u| u.exists)
+            // Deviation: SuperWoW's second return, the unit's guid as its guid tokens take it.
+            let guid = with_unit(lua, &token, None, |u| u.exists.then_some(u.guid))?;
+            Ok(match guid {
+                Some(guid) => mlua::MultiValue::from_vec(vec![
+                    mlua::Value::Integer(1),
+                    mlua::Value::String(
+                        lua.create_string(super::super::superwow::guid_text(guid))?,
+                    ),
+                ]),
+                None => mlua::MultiValue::from_vec(vec![mlua::Value::Nil]),
+            })
         })?,
     )?;
 

@@ -489,6 +489,13 @@ impl UnitTokens<'_, '_> {
     /// latch and the roster ([`TokenGlobals`]), and the objects as of the drain's place
     /// ([`TokenObjects`]). `None` is nobody.
     pub(crate) fn guid(&self, token: &str, selection: &Selection) -> Option<u64> {
+        // SuperWoW's `owner` suffix: the unit's charmer, summoner or creator.
+        if let Some(of) = benilla_ui::script::owner_of_token(token) {
+            let unit = self.guid(of, selection)?;
+            let objects = self.objects();
+            let store = objects.store(unit)?;
+            return benilla_ui::script::owner_in_fields(|i| store.0.field(i as u16).unwrap_or(0));
+        }
         let UnitTokenParse::Unit { base, hops } = parse_unit_token(token) else {
             return None;
         };
@@ -575,6 +582,13 @@ impl UnitTokenGlobals for TokenGlobals<'_, '_, '_> {
     }
     fn party(&self, row: u32) -> u64 {
         self.tokens.party_member(row).unwrap_or(0)
+    }
+    /// SuperWoW's `markN`: the raid-target board's slot N-1.
+    fn raid_mark(&self, mark: u8) -> u64 {
+        mark.checked_sub(1)
+            .and_then(|i| self.tokens.group.raid_targets.get(usize::from(i)))
+            .copied()
+            .unwrap_or(0)
     }
     fn raid(&self, row: u32) -> u64 {
         self.tokens.raid_member(row).unwrap_or(0)
@@ -928,7 +942,7 @@ impl UnitObjectRead for StoreObject<'_> {
     }
     /// The quest-log window, off a player alone: `IsUnitOnQuest` looks the guid up with
     /// TYPEMASK_PLAYER (`0x4dfe97`) before it reads `[obj+0xe68]`.
-    fn quest_log(&self) -> [[u32; 3]; 20] {
+    fn quest_log(&self) -> [[u32; 3]; benilla_ui::script::QUEST_LOG_SLOTS] {
         if matches!(self.0 .0.object_type(), Some(ObjectType::Player)) {
             self.0 .0.player_quest_log_window()
         } else {
@@ -2689,7 +2703,7 @@ mod tests {
         assert_eq!(player.quest_log[1], [0, 0, 0]);
         assert_eq!(
             snap(0x09).quest_log,
-            [[0; 3]; 20],
+            [[0; 3]; benilla_ui::script::QUEST_LOG_SLOTS],
             "a creature has no PLAYER block"
         );
     }

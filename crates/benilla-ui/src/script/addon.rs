@@ -177,6 +177,26 @@ fn addon_key(lua: &Lua, model: &Model, key: &Value, usage: &'static str) -> mlua
 /// rest sorted case-insensitively by `## Title`, else folder name (`0x51deb0` through
 /// `AddOn_GetTitle 0x51df20`, `SStrCmpI`), by the CRT `qsort` (`0x73f727`) from the list's order.
 /// Titles that match without case sit where `qsort` leaves them. Empty until the server replies.
+/// The Lua index space with no server reply, as the login screen's addon manager lists it: every
+/// shown row, ordered by title as a reply's index is. Deviation: the reference's is empty until
+/// the reply ([`rebuild_index`]).
+pub(super) fn index_without_reply(model: &mut Model) {
+    if model.addon_reply.is_some() {
+        return;
+    }
+    let mut index: Vec<usize> = (0..model.addons.len())
+        .filter(|&i| !model.addons[i].hidden)
+        .collect();
+    let title = |i: usize| {
+        let a = &model.addons[i];
+        a.title.as_deref().unwrap_or(&a.name)
+    };
+    crate::crt::qsort(&mut index, |&a, &b| {
+        crate::crt::str_cmp_i(title(a), title(b))
+    });
+    model.addon_index = index;
+}
+
 fn rebuild_index(model: &mut Model) {
     let Some(reply) = model.addon_reply.take() else {
         model.addon_index = Vec::new(); // no reply yet, as in the reference

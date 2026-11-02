@@ -48,7 +48,7 @@ pub(crate) mod reactive;
 mod reactive_tests;
 pub(crate) mod recount;
 mod state;
-pub(crate) use state::{wears_entry, ActionStateMemory, ActionStates};
+pub(crate) use state::{wears_entry, ActionStateMemory, ActionStates, ActionWalk};
 mod spell_slots;
 pub(crate) mod toggle;
 // The bar's legs of the spell packets, run in their handlers.
@@ -541,10 +541,12 @@ impl Plugin for UiActionPlugin {
                 // The refusals ride with the unit feed, before the VM ticks.
                 feed::feed_actions.in_set(UnitFeed),
             );
+        crate::live_data::loader(app, load_spells);
+        crate::live_data::loader(app, load_spell_mechanics);
     }
 }
 
-fn load_spells(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
+pub(crate) fn load_spells(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let loaded = {
         let mut chain = assets.chain.lock_recover();

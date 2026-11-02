@@ -372,6 +372,7 @@ pub(super) fn plugin(app: &mut App) {
             )
                 .in_set(crate::ui_script::UiDrain),
         );
+    crate::live_data::loader(app, load_item_sounds);
 }
 
 #[cfg(test)]

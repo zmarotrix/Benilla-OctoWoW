@@ -66,11 +66,11 @@ const AFTER_THE_PACKETS_IN_THE_REFERENCE: &[(&str, &[&str], &str)] = &[
         "Commands net::motion::spline::Spline", "Transform"],
         "turns the units' models toward their facing; unit movement is \
          frame time, which the reference runs after the packets (`0x420d63` after `0x420d55`)"),
-    ("::net::motion::spline::ground_clamp_creatures", &["Transform"],
+    ("::net::motion::spline::ground_clamp_creatures", &["Commands Sensor", "Transform"],
         "settles the creatures on the ground; unit movement is \
          frame time, which the reference runs after the packets (`0x420d63` after `0x420d55`)"),
-    ("::net::motion::remote::extrapolate_remote_units", &["Commands net::motion::spline::Spline",
-        "Transform", "net::motion::remote::RemoteMotion"],
+    ("::net::motion::remote::extrapolate_remote_units", &["Commands Sensor",
+        "Commands net::motion::spline::Spline", "Transform", "net::motion::remote::RemoteMotion"],
         "dead-reckons the remote players between their packets in the movement tick (event 5's \
          `0x616800` → `0x615b10`), frame time, which the reference runs after the packets \
          (`0x420d63` after `0x420d55`); a due packet seats its unit in the handler \
@@ -87,7 +87,7 @@ const AFTER_THE_PACKETS_IN_THE_REFERENCE: &[(&str, &[&str], &str)] = &[
          `0x616800` → `0x615b10` → `0x616620` → `0x615c30`), then stamps the clock the next \
          frame's arrivals are due by (`0x616846`), frame time, which the reference runs after \
          the packets (`0x420d63` after `0x420d55`)"),
-    ("::Collider>", &["ColliderTrees"],
+    ("::Collider>", &["ColliderAabb", "ColliderTrees"],
         "refits the collision world's trees to the colliders frame time moved, the decks among \
          them, which the reference moves in the movement tick (event 5's `0x616800` → \
          `0x630970`), after the packets (`0x420d63` after `0x420d55`): a due arrival's catch-up \
@@ -103,7 +103,7 @@ const AFTER_THE_PACKETS_IN_THE_REFERENCE: &[(&str, &[&str], &str)] = &[
     ("::transport::ground_deck_riders", &["Transform", "net::motion::remote::RemoteMotion"],
         "settles the riders on their decks; unit movement is \
          frame time, which the reference runs after the packets (`0x420d63` after `0x420d55`)"),
-    ("::transport::tick_transports", &["Transform"],
+    ("::transport::tick_transports", &["Position", "Rotation", "Transform"],
         "moves the transports along their paths; unit movement is \
          frame time, which the reference runs after the packets (`0x420d63` after `0x420d55`)"),
     ("::ui_action::cooldown_lane::drop_cooldown_log<benilla_app::spell::cooldowns::Cooldowns>",
@@ -389,6 +389,16 @@ fn rows_between(
 /// a feed that rewrites once a frame what a listener's call reads inside its packet cannot hide.
 #[test]
 fn every_writer_between_the_dispatch_and_the_drain_is_listed() {
+    // The whole client's access sets, walked at once, outgrow a test thread's default stack.
+    std::thread::Builder::new()
+        .stack_size(64 << 20)
+        .spawn(writers_are_listed)
+        .expect("a test thread")
+        .join()
+        .expect("the check passes");
+}
+
+fn writers_are_listed() {
     let mut app = crate::game_plugins::schedule_tests::headless_client();
     let Some(found) = writers_between(&mut app) else {
         eprintln!("skipped: this build carries no type names");

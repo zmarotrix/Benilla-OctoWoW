@@ -67,6 +67,8 @@ impl Plugin for ChrClassesPlugin {
             Startup,
             (load_chr_classes, load_chr_races).after(AssetSet::Open),
         );
+        crate::live_data::loader(app, load_chr_classes);
+        crate::live_data::loader(app, load_chr_races);
     }
 }
 

@@ -21,6 +21,7 @@ pub(crate) mod known;
 pub(crate) mod level;
 mod mods;
 pub(crate) mod net;
+pub(crate) mod queue;
 pub(crate) mod range_check;
 mod range_units;
 mod report;
@@ -118,6 +119,7 @@ impl Plugin for SpellPlugin {
                 ),
             );
         net::register(app);
+        queue::register(app);
     }
 }
 

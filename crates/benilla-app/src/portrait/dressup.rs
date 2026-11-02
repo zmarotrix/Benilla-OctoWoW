@@ -5,11 +5,14 @@
 //! pane on the player draws this assembly ([`super::panes`]); `DressUpModel` (`0x495c00`) shares
 //! the `CharacterModelBase` ctor (`0x505680`) with every character pane.
 //!
-//! Deviation: the auction house's `AuctionDressUpModel` draws the same one assembly, because the
-//! app's `TryOn`/`Dress` intents are not per-widget; the reference's two widgets each clone their
-//! own model.
+//! Each `DressUpModel` pane wears its own try-ons and draws its own assembly, as the reference's
+//! widgets each clone their own model: the dressing room, the auction house's, and a server's
+//! own panes (OctoWoW's shop cards, several at once).
+
+use std::collections::HashMap;
 
 use benilla_protocol::CharEnumItem;
+use benilla_ui::widget::FrameHandle;
 use bevy::prelude::*;
 
 use super::{PreviewBillboard, PreviewEffects, PreviewPart, PreviewRider};
@@ -34,17 +37,20 @@ pub(crate) struct DressUpLook {
     pub(crate) emblem: Option<benilla_formats::GuildEmblem>,
 }
 
-/// The dressing room's input: the look, `None` while neither dressing room is shown.
+/// The dressing rooms' input: each shown pane's look, by pane.
 #[derive(Resource, Default)]
 pub(crate) struct DressUpPreview {
-    pub(crate) look: Option<DressUpLook>,
+    pub(crate) looks: HashMap<FrameHandle, DressUpLook>,
 }
 
-/// The assembled dressing-room parts. `revision` bumps on a fresh assembly or a clear; a pane
-/// drawing it re-dresses only when it moves.
+/// Each pane's assembled dressing-room parts, by pane.
 #[derive(Resource, Default)]
+pub(crate) struct DressUpBakes(pub(crate) HashMap<FrameHandle, DressUpBake>);
+
+/// One pane's assembled dressing-room parts. `revision` bumps on a fresh assembly or a clear; the
+/// pane drawing it re-dresses only when it moves.
+#[derive(Default)]
 pub(crate) struct DressUpBake {
-    pub(crate) look: Option<DressUpLook>,
     pub(crate) display_id: u32,
     pub(crate) parts: Vec<PreviewPart>,
     pub(crate) riders: Vec<PreviewRider>,

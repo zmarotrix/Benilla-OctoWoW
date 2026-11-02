@@ -110,6 +110,8 @@ pub(crate) fn run(world: &mut World, edges: &[FieldChanged], calls: &[AuraFields
         crate::ui_session::on_field_edge(world, e);
         crate::ui_pet::on_field_edge(world, e);
     }
+    // nampower's aura and unit events, each at its edge's stamp.
+    crate::superwow::field_events(world, edges);
 }
 
 /// A callback's deferred stretch on the world's VM: each leg's signals held as it runs and parked
